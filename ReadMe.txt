@@ -1,4 +1,4 @@
-🏗 System Architecture
+System Architecture
 	The software is built on a modular UML architecture designed for high reliability in acoustic environments.
 
 	Core Components
@@ -14,7 +14,7 @@
 		Hardware Bridge (IAudioHardware): A cross-platform abstraction layer that standardizes 
 		audio buffers between Android (ANIAudioHardware) and iOS (IOSAudioHardware).
 
-📡 Protocol Specification
+ Protocol Specification
 	Frequency Range: 18,000 Hz – 20,000 Hz.
 
 	Frame Size: 56 bits (8-bit Start Flag, 40-bit UserID payload, 8-bit CRC checksum).
@@ -23,7 +23,7 @@
 
 	Collision Logic: Request-to-Send (RTS) / Clear-to-Send (CTS) handshake.
 
-🛠 Prerequisites
+ Prerequisites
 	Android: AudioRecord API support.
 
 	iOS: AVAudioEngine/AVAudioSession support.
