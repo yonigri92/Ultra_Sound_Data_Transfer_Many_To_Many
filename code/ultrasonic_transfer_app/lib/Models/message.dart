@@ -1,8 +1,10 @@
 //get and set are build in, this class will only hold the massage
 //Unit to ensure scaleability and not meddle in integration responsibilities
+
 class Message{
-    final String payload;
-    final String checksum;
+    final List<int> payload;
+    final List<int> checksum;
+    static final divider = 0x07;
   Message(this.payload,this.checksum);
 
 
@@ -16,27 +18,37 @@ class Message{
           return Message object if correct
   */
   //split the payload and checksum
-  List<int> newpayload,newchecksum;
-  newpayload = bitStream.sublist(0,bitStream.length - 8);
-  newchecksum = bitStream.sublist(bitStream.length - 8,bitStream.length);
-  //CRC CheckSum
-  if(_crcCheckSum(newpayload,newchecksum)){
 
-
+  if(_crcCheckSum(bitStream)){
+      return Message(bitStream.sublist(0,bitStream.length - 8),bitStream.sublist(bitStream.length - 8,bitStream.length));
   }else{
-
+    throw FormatException("CheckSum Incorrect");
   }
   }
-  bool _crcCheckSum(List<int> payload,List<int> checksum){
-      int crc;
-      List<int> payload; 
-      //get the first 8 bits and CheckSum
-      for (int i = 0 ; i++ i <8){
-
+  static bool _crcCheckSum(List<int> payload){
+      //initialize CRC by placeing first 8 bits inside int
+      int currentDivider = 0;
+      
+      // getting the first number(first 8 digits from bitstream)
+      for(int i=0;i<8;i++){
+        currentDivider += payload[i];
+        if(i!=7) currentDivider = currentDivider<<1;//make sure we dont move left into 9 digits 
+        
       } 
-
-
-
-
+         currentDivider = currentDivider & 0xFF;
+      for(int i = 8 ; i < payload.length; i ++){
+        if((currentDivider&0x80)==0){// if the last bit is zero count how many 0 are ther and move to the 1 bit to the right
+          currentDivider = currentDivider<<1;
+          currentDivider = currentDivider | payload[i];
+          currentDivider = currentDivider & 0xFF;
+        }
+        else{//divide the currentDivider by the checksum and 
+            currentDivider = currentDivider<<1;
+            currentDivider = currentDivider | payload[i];
+            currentDivider = currentDivider^divider;
+            currentDivider = currentDivider & 0xFF;
+        }
+      }
+    return currentDivider == 0 ;
   }
 }

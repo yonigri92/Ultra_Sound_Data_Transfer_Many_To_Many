@@ -8,12 +8,14 @@ class Fsk {
 Protocol Output:
   Modulated Waveform — FSK-encoded ultrasonic audio stream.
 */
-  
+
 List <int> transmitSignal(List <int> bitStream){
 
   var audioTrack = _initAudioTrack(sampleRate);
     for (int bit in bitStream){
-      
+      if(bit == 1): systemcall that generate 20khz for 0.1 sec
+      else: systemcall that generate 18khz for 0.1 sec
+
     }
   }
 }
