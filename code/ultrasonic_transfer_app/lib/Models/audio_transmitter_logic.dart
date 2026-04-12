@@ -1,0 +1,51 @@
+import 'dart:typed_data';
+import 'package:raw_sound/raw_sound_player.dart';
+import 'fsk_modulation_logic.dart';
+
+class AudioTransmitter {
+  final FskModulationLogic modulator;
+  final RawSoundPlayer _player = RawSoundPlayer();
+  bool _isInitialized = false;
+
+  AudioTransmitter(this.modulator);
+
+  Future<void> initEngine() async {
+    await _player.initialize(
+      bufferSize: 8192,
+      nChannels: 1,
+      sampleRate: modulator.sampleRate,
+      pcmType: RawSoundPCMType.PCMI16,
+    );
+    _isInitialized = true;
+  }
+
+  Future<void> transmitFrame(Uint8List frame) async {
+    if (!_isInitialized) return;
+
+    await _player.play();
+    modulator.loadFrame(frame);
+    await _player.feed(Uint8List(1024));
+
+    while (!modulator.isFinished) {
+      Int16List intBuffer = modulator.generateNextBuffer(1024);
+      Uint8List byteBuffer = Uint8List(intBuffer.length * 2);
+      ByteData byteData = ByteData.view(byteBuffer.buffer);
+      for (int i = 0; i < intBuffer.length; i++) {
+        byteData.setInt16(i * 2, intBuffer[i], Endian.little);
+      }
+      await _player.feed(byteBuffer);
+    }
+
+    await _player.feed(Uint8List(8192));
+
+    print("DEBUG: Transmission complete",);
+  }
+
+  Future<void> stopStreaming() async {
+    await _player.stop();
+  }
+
+  Future<void> release() async {
+    await _player.release();
+  }
+}
