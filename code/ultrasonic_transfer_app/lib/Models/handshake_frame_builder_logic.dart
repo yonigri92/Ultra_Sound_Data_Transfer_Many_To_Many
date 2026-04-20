@@ -1,6 +1,6 @@
 import 'dart:typed_data';
-import 'package:flutter_application_1/device_id_create_logic.dart';
-
+import 'device_id_create_logic.dart';
+import 'packet_builder_logic.dart';
 class HandshakeFrameBuilderLogic {
   static const int _frameStartingCharacter = 0xF;
   static const int _frameSeparatingCharacter = 0xF;
@@ -16,7 +16,8 @@ class HandshakeFrameBuilderLogic {
     }
 
     frame[5] = ((userIdBytes[4] & 0x0F) << 4) | _frameSeparatingCharacter;
-    frame[6] = _calculateChecksum(frame.sublist(0, 6));
+ 
+    frame[6] = PacketBuilderLogic.crcCheckSum(frame.sublist(0, 6));
 
     return frame;
   }
@@ -29,11 +30,4 @@ class HandshakeFrameBuilderLogic {
     return bytes;
   }
 
-  int _calculateChecksum(Uint8List data) {
-    int sum = 0;
-    for (var b in data) {
-      sum = (sum + b) % 256;
-    }
-    return sum;
-  }
 }

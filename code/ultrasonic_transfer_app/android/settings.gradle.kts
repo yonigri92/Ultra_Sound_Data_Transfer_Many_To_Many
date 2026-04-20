@@ -24,3 +24,12 @@ plugins {
 }
 
 include(":app")
+gradle.beforeProject {
+    val project = this
+    if (project.path.contains("raw_sound")) {
+        project.afterEvaluate {
+            val android = project.extensions.findByName("android") as? com.android.build.gradle.BaseExtension
+            android?.namespace = "com.raw_sound"
+        }
+    }
+}

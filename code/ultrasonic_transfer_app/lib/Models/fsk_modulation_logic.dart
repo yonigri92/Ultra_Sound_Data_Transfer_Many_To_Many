@@ -24,9 +24,14 @@ class FskModulationLogic {
   // Constructor initializes
   FskModulationLogic({
     this.sampleRate = 44100,
-    this.baudRate = 2000,
+    this.baudRate = 20,      // שונה מ-2000 ל-20 (חייב להתאים למקלט!)
     this.freq0 = 18000.0,
-    this.freq1 = 20000.0,
+    this.freq1 = 19000.0,
+
+    // this.sampleRate = 44100,
+    // this.baudRate = 2000,
+    // this.freq0 = 18000.0,
+    // this.freq1 = 20000.0,
   }) {
     // Fill the Sine LUT in memory
     for (int i = 0; i < lutSize; i++) {
