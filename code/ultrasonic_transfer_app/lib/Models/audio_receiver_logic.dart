@@ -46,7 +46,6 @@ class AudioReceiver {
     }
 
     double hopSize = _demodulator.windowSize / 2;
-    // הוספת clamp כדי להבטיח מינימום של 1
     int framesPerBit = (_demodulator.sampleRate / _demodulator.baudRate / hopSize).round().clamp(2, 100);
 
     while (_sampleBuffer.length >= _demodulator.windowSize) {
@@ -55,19 +54,29 @@ class AudioReceiver {
 
       if (currentBit != -1) {
         if (currentBit == _lastBit) {
-          //print("DEBUG: Bit: $currentBit | Count: $_consecutiveCount | Goal: $framesPerBit");
-          _consecutiveCount++;
+           _consecutiveCount++;
         } else {
           _consecutiveCount = 1;
           _lastBit = currentBit;
         }
 
-        if (_consecutiveCount == framesPerBit) {
-          _decoder.pushBit(currentBit, onHandshakeReceived);
-          //print("DEBUG: Bit Sync: $currentBit (Pushed to Decoder)");
+        int targetCount = (framesPerBit * 0.7).round().clamp(2, framesPerBit);
 
-          _consecutiveCount = -2; // תשנה מ-100- ל-0!
+     if (_consecutiveCount >= targetCount) {
+        _decoder.pushBit(currentBit, onHandshakeReceived);
+        
+        _consecutiveCount = 0;
+        _lastBit = -1; 
+
+        int samplesToSkip = (framesPerBit * (_demodulator.windowSize ~/ 2));
+        
+         if (_sampleBuffer.length > 0) {
+            int finalSkip = samplesToSkip.clamp(0, _sampleBuffer.length);
+          _sampleBuffer.removeRange(0, finalSkip);
         }
+        
+         break; 
+      }
       } else {
         _lastBit = -1;
         _consecutiveCount = 0;

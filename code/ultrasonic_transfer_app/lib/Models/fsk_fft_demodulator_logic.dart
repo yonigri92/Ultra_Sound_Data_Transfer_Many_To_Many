@@ -36,10 +36,8 @@ class FskFftDemodulator {
     double energy0 = magnitudes[_bin0];
     double energy1 = magnitudes[_bin1];
 
-    double noiseThreshold = 0.8;
-    if (energy0 > 0.8 || energy1 > 0.8) {
-     // print("FFT DEBUG: F0: ${energy0.toStringAsFixed(1)} | F1(4k): ${energy1.toStringAsFixed(1)}",);
-    }
+    double noiseThreshold = 0.3;
+
     if (energy0 < noiseThreshold && energy1 < noiseThreshold) {
       return -1;
     }
