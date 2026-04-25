@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:typed_data';
-import 'dart:convert';
 import 'handshake_frame_builder_logic.dart'; // תוודא שזה השם המדויק של הקובץ
-
 import 'fsk_modulation_logic.dart';
 import 'audio_transmitter_logic.dart';
 import 'audio_receiver_logic.dart'; 
@@ -81,12 +79,10 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     int frameCounter = 1;
     while (isTransmittingLoop) {
       try {
-        // 1. יוצרים את הפריים המיוחד של לחיצת היד (7 בתים, Header 0xF, ו-CRC)
         Uint8List handshakeFrame = await HandshakeFrameBuilderLogic().buildHandshakeFrame();
         
         print("DEBUG: Sending Handshake Frame...");
 
-        // 2. משדרים את הפריים שבנינו ולא מחרוזת טקסט
         await _transmitter.transmitFrame(handshakeFrame);
         
         frameCounter++;

@@ -65,12 +65,13 @@ class AudioReceiver {
      if (_consecutiveCount >= targetCount) {
         _decoder.pushBit(currentBit, onHandshakeReceived);
         
+    
+
+        int remainingFrames = framesPerBit - _consecutiveCount;
+        int samplesToSkip = (remainingFrames * (_demodulator.windowSize ~/ 2));
         _consecutiveCount = 0;
         _lastBit = -1; 
-
-        int samplesToSkip = (framesPerBit * (_demodulator.windowSize ~/ 2));
-        
-         if (_sampleBuffer.length > 0) {
+        if (_sampleBuffer.isNotEmpty) {
             int finalSkip = samplesToSkip.clamp(0, _sampleBuffer.length);
           _sampleBuffer.removeRange(0, finalSkip);
         }
