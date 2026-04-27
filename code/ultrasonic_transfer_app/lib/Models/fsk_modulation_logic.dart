@@ -24,7 +24,7 @@ class FskModulationLogic {
   // Constructor initializes
   FskModulationLogic({
     this.sampleRate = 44100,
-    this.baudRate = 20,      // שונה מ-2000 ל-20 (חייב להתאים למקלט!)
+    this.baudRate = 2000,      // שונה מ-2000 ל-20 (חייב להתאים למקלט!)
     this.freq0 = 18000.0,
     this.freq1 = 19000.0,
 
@@ -54,40 +54,46 @@ class FskModulationLogic {
 
   bool get isFinished => _isFinished;
 
-  Int16List generateNextBuffer(int bufferLength) {
-    Int16List buffer = Int16List(bufferLength);
+Int16List generateNextBuffer(int bufferLength) {
+  Int16List buffer = Int16List(bufferLength);
 
-    for (int i = 0; i < bufferLength; i++) {
-      if (_currentTotalBitIndex < _totalBitsInFrame) {
-        int byteIndex = _currentTotalBitIndex >> 3;
-        int bitPositionWithinByte = 7 - (_currentTotalBitIndex & 7);
-        int bit = (_frameToTransmit[byteIndex] >> bitPositionWithinByte) & 1;
+  int guardSamples = (_samplesPerBit * 0.15).round(); // שומרים על ה-15% שקט
+  int activeSamples = _samplesPerBit - guardSamples;
+
+  for (int i = 0; i < bufferLength; i++) {
+    if (_currentTotalBitIndex < _totalBitsInFrame) {
+      int byteIndex = _currentTotalBitIndex >> 3;
+      int bitPositionWithinByte = 7 - (_currentTotalBitIndex & 7);
+      int bit = (_frameToTransmit[byteIndex] >> bitPositionWithinByte) & 1;
+
+      if (_samplesProcessedInCurrentBit < activeSamples) {
+        // חלק פעיל - משדרים סינוס
         int lutIndex = ((_phase / (2 * pi)) * lutSize).toInt();
-
-        if (lutIndex >= lutSize) {
-          lutIndex = lutSize - 1;
-        }
-
-        // multiple by 32767 for maximum amplitude
+        if (lutIndex >= lutSize) lutIndex = lutSize - 1;
+        
         buffer[i] = (_sineLUT[lutIndex] * 32767).toInt();
-
+        
+        // קידום פאזה רציף (בלי לאפס ל-0!)
         _phase += (bit == 1) ? _phaseInc1 : _phaseInc0;
-
-        if (_phase >= 2 * pi) {
-          _phase -= 2 * pi;
-        }
-
-        _samplesProcessedInCurrentBit++;
-
-        if (_samplesProcessedInCurrentBit >= _samplesPerBit) {
-          _samplesProcessedInCurrentBit = 0;
-          _currentTotalBitIndex++;
-        }
+        if (_phase >= 2 * pi) _phase -= 2 * pi;
       } else {
+        // חלק של השקט (Guard Interval)
         buffer[i] = 0;
-        _isFinished = true;
+        // חשוב: אנחנו לא נוגעים ב-_phase כאן, כדי שהביט הבא ימשיך מאותה נקודה
       }
+
+      _samplesProcessedInCurrentBit++;
+
+      if (_samplesProcessedInCurrentBit >= _samplesPerBit) {
+        _samplesProcessedInCurrentBit = 0;
+        _currentTotalBitIndex++;
+        // הסרנו את ה- _phase = 0.0; הקודם! 
+      }
+    } else {
+      buffer[i] = 0;
+      _isFinished = true;
     }
-    return buffer;
   }
+  return buffer;
+}
 }

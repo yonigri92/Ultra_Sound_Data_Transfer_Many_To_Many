@@ -2,8 +2,8 @@ import 'dart:typed_data';
 import 'device_id_create_logic.dart';
 import 'packet_builder_logic.dart';
 class HandshakeFrameBuilderLogic {
-  static const int _frameStartingCharacter = 0xF;
-  static const int _frameSeparatingCharacter = 0xF;
+  static const int _frameStartingCharacter = 0x0B;
+  static const int _frameSeparatingCharacter = 0x06;
 
   Future<Uint8List> buildHandshakeFrame() async {
     String uniqueDeviceId = await DeviceIdCreateLogic().get40BitId();

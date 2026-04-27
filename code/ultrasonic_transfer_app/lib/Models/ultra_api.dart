@@ -86,7 +86,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
         await _transmitter.transmitFrame(handshakeFrame);
         
         frameCounter++;
-        await Future.delayed(const Duration(milliseconds: 1500));
+        await Future.delayed(const Duration(milliseconds: 2000));
       } catch (e) {
         print("Transmitter Error: $e");
         if (mounted) {

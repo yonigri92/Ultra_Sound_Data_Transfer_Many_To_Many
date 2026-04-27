@@ -60,7 +60,7 @@ class AudioReceiver {
           _lastBit = currentBit;
         }
 
-        int targetCount = (framesPerBit * 0.7).round().clamp(2, framesPerBit);
+        int targetCount = (framesPerBit * 0.8).round().clamp(2, framesPerBit);
 
      if (_consecutiveCount >= targetCount) {
         _decoder.pushBit(currentBit, onHandshakeReceived);
