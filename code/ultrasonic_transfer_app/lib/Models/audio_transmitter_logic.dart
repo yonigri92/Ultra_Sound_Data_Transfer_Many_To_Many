@@ -41,7 +41,7 @@ class AudioTransmitter {
       await _player.feed(byteBuffer);
     }
 
-    await _player.feed(Uint8List(1024));
+    await _player.feed(Uint8List(1024));// padding
 
    // print("DEBUG: Transmission complete",);
   }

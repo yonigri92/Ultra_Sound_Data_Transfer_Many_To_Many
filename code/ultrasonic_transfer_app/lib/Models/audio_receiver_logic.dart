@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:record/record.dart';
 import 'fsk_fft_demodulator_logic.dart';
-import 'HandshakeDecoder.dart';
+import 'hand_shake_decoder.dart';
 
 class AudioReceiver {
   final FskFftDemodulator _demodulator = FskFftDemodulator();
@@ -63,7 +63,7 @@ class AudioReceiver {
         int targetCount = (framesPerBit * 0.8).round().clamp(2, framesPerBit);
 
      if (_consecutiveCount >= targetCount) {
-        _decoder.pushBit(currentBit, onHandshakeReceived);
+        _decoder.pushSymbol(currentBit, onHandshakeReceived);
         
     
 

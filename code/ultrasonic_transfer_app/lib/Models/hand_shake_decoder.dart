@@ -3,12 +3,13 @@ import 'packet_builder_logic.dart';
 
 class HandshakeDecoder {
   // 56 ביטים = 7 בייטים (Preamble, 5 Bytes ID, CRC)
-  final List<int> _bitBuffer = List.filled(56, 0, growable: true);
+  final List<int> _symbolBuffer = List.filled(14, 0, growable: true);
 
-  void pushBit(int bit, Function(String deviceId) onHandshakeDetected) {
-    // הזזה של החלון הצף
-    _bitBuffer.removeAt(0);
-    _bitBuffer.add(bit);
+  void pushSymbol(int symbol, Function(String deviceId) onHandshakeDetected) {
+    if (symbol == -1) return;
+    
+    _symbolBuffer.removeAt(0);
+    _symbolBuffer.add(symbol);
     
     _checkFrame(onHandshakeDetected);
   }
@@ -16,11 +17,7 @@ class HandshakeDecoder {
 void _checkFrame(Function(String deviceId) onHandshakeDetected) {
   Uint8List frame = Uint8List(7);
   for (int i = 0; i < 7; i++) {
-    int byteVal = 0;
-    for (int j = 0; j < 8; j++) {
-      byteVal = (byteVal << 1) | _bitBuffer[i * 8 + j];
-    }
-    frame[i] = byteVal;
+    frame[i] =(_symbolBuffer[i * 2]<<4|_symbolBuffer[i * 2 + 1]& 0x0F);
   }
 
   // בדיקה משולבת: גם Preamble וגם Separator חייבים להיות תקינים
@@ -34,7 +31,7 @@ void _checkFrame(Function(String deviceId) onHandshakeDetected) {
 
   // אם הגענו לכאן, יש סיכוי גבוה מאוד שזה פריים אמיתי!
   print("DEBUG: High Probability Frame Found!");
-  print("DEBUG: Raw Bits: ${_bitBuffer.join('')}");
+  print("DEBUG: Raw Bits: ${_symbolBuffer.join('')}");
 
   // בדיקת CRC
   int calculatedChecksum = PacketBuilderLogic.crcCheckSum(frame.sublist(0, 6));
@@ -53,6 +50,6 @@ void _checkFrame(Function(String deviceId) onHandshakeDetected) {
   print("SUCCESS: Handshake detected! ID: $deviceId");
   onHandshakeDetected(deviceId);
 
-  _bitBuffer.fillRange(0, 56, 0);
+  _symbolBuffer.fillRange(0, 14, 0);
 }
 }
