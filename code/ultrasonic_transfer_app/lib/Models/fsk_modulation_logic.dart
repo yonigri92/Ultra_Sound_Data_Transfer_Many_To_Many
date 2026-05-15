@@ -23,7 +23,7 @@ class FskModulationLogic {
   // Constructor initializes
   FskModulationLogic({
     this.sampleRate = 44100,
-    this.baudRate = 10,      // שונה מ-2000 ל-20 (חייב להתאים למקלט!)
+    this.baudRate = 10,      
      this.freq = const [
       17054.3,17226.6,17399.8,17571.1,17743.4,17915.6,18087.9,18260.2,
       18432.4,18604.7,18777.0,18949.2,19121.5,19293.8,19466.0,19638.3],
