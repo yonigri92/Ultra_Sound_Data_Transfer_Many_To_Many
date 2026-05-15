@@ -33,7 +33,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     _initTransmitterEngine();
 
     _receiver = AudioReceiver(
-      onHandshakeReceived: (String senderId) {
+      onPacketReceived: (String senderId) {
         if (mounted) {
           setState(() {
             lastReceivedId = senderId;

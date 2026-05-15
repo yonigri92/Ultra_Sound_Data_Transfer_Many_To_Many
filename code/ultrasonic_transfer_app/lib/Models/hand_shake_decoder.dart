@@ -5,26 +5,14 @@ class HandshakeDecoder {
   // 56 ביטים = 7 בייטים (Preamble, 5 Bytes ID, CRC)
   final List<int> _symbolBuffer = List.filled(14, 0, growable: true);
 
-  void pushSymbol(int symbol, Function(String deviceId) onHandshakeDetected) {
-    if (symbol == -1) return;
-    
-    _symbolBuffer.removeAt(0);
-    _symbolBuffer.add(symbol);
-    
-    _checkFrame(onHandshakeDetected);
-  }
 
-void _checkFrame(Function(String deviceId) onHandshakeDetected) {
-  Uint8List frame = Uint8List(7);
-  for (int i = 0; i < 7; i++) {
-    frame[i] =(_symbolBuffer[i * 2]<<4|_symbolBuffer[i * 2 + 1]& 0x0F);
-  }
+ Future<void> decodeFrame(Uint8List frame,Function(String deviceId) onPacketDetected) async {
 
   bool preambleOk = (frame[0] >> 4) == 0x0B;
   bool separatorOk = (frame[5] & 0x0F) == 0x06;
 
   if (!preambleOk || !separatorOk) {
-    return;
+    throw Exception("Invalid Handshake Structure");
   }
 
   print("DEBUG: High Probability Frame Found!");
@@ -33,7 +21,7 @@ void _checkFrame(Function(String deviceId) onHandshakeDetected) {
   int calculatedChecksum = PacketBuilderLogic.crcCheckSum(frame.sublist(0, 6));
   if (calculatedChecksum != frame[6]) {
     print("DEBUG: Structure OK, but CRC failed. Exp: ${frame[6].toRadixString(16)}, Got: ${calculatedChecksum.toRadixString(16)}");
-    return;
+   throw Exception("Handshake CRC mismatch");
   }
 
   // חילוץ ה-ID
@@ -44,9 +32,8 @@ void _checkFrame(Function(String deviceId) onHandshakeDetected) {
 
   String deviceId = extractedUserId.map((b) => b.toRadixString(16).padLeft(2, '0')).join().toUpperCase();
   print("SUCCESS: Handshake detected! ID: $deviceId");
-  onHandshakeDetected(deviceId);
+  onPacketDetected(deviceId);
 
-  _symbolBuffer.fillRange(0, 14, 0);
 }
 
 

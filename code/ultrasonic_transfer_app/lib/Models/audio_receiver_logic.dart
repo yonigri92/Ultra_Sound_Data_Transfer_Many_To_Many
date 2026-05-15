@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:record/record.dart';
 import 'fsk_fft_demodulator_logic.dart';
-import 'hand_shake_decoder.dart';
 
+import 'dispatcher.dart';
 class AudioReceiver {
   final FskFftDemodulator _demodulator = FskFftDemodulator();
-  final HandshakeDecoder _decoder = HandshakeDecoder();
+  final Dispatcher _decoder = Dispatcher();
+
+
   final AudioRecorder _audioRecorder = AudioRecorder();
 
   StreamSubscription<Uint8List>? _micSubscription;
@@ -15,9 +17,9 @@ class AudioReceiver {
   int _lastBit = -1;
   int _consecutiveCount = 0;
 
-  final Function(String senderId) onHandshakeReceived;
+  final Function(String senderId) onPacketReceived;
 
-  AudioReceiver({required this.onHandshakeReceived});
+  AudioReceiver({required this.onPacketReceived});
   //this is the Listening method, 1. wait for premission from phone to record. 
   Future<void> startListening() async {
     if (await _audioRecorder.hasPermission()) { 
@@ -63,7 +65,7 @@ class AudioReceiver {
         int targetCount = (framesPerBit * 0.8).round().clamp(2, framesPerBit);
 
      if (_consecutiveCount >= targetCount) {
-        _decoder.pushSymbol(currentBit, onHandshakeReceived);
+        _decoder.pushSymbol(currentBit, onPacketReceived);
         
     
 
