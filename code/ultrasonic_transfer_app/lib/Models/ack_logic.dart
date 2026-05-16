@@ -10,10 +10,10 @@ class AckLogic {
     */
     int crc8;
     Uint8List frame = Uint8List(3);
-    frame[0] = (_frameStartingCharacter ) << 4 | ((frameSequence & 0x0F)) ;// framestartingchar in bits 4-8 and framesequence in locaiton 0-4
+    frame[0] = (_frameStartingCharacter ) << 4 | ((frameSequence & 0xF0)>>4) ;// framestartingchar in bits 4-8 and framesequence in location 0-4
     frame[1] = (frameSequence & 0x0F) << 4;
     crc8 = PacketBuilderLogic.crcCheckSum(frame.sublist(0, 2));
-    frame[1] =(frame[1] & 0x0F << 4 |(crc8 & 0xF0)>>4) ;//framesequence in location 4-8 crc8 in 0-4
+    frame[1] =(frame[1] & 0xF0 |(crc8 & 0xF0)>>4) ;//framesequence in location 4-8 crc8 in 0-4
     frame[2] = ((crc8 & 0x0F)<<4);//crc8 location 0-4 noise not to be sent 4-8
     return frame;
   }
