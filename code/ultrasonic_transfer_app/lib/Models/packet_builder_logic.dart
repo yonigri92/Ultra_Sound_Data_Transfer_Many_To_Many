@@ -83,13 +83,14 @@ class PacketBuilderLogic{
       output: an array of int each index is 8 bits
   */
       Uint8List bufferPacket = Uint8List(8);
-      bufferPacket[0] = 0xAB;
+      bufferPacket[0] = 0x0D;
       bufferPacket[1] = seq[0];
       for (int i = 0; i < newPacket.length; i++) {
         bufferPacket[i + 2] = newPacket[i];
       }
       bufferPacket[7] = 0x00;
-      bufferPacket[7] = crcCheckSum(bufferPacket);
+      //bufferPacket[7] = crcCheckSum(bufferPacket);
+      bufferPacket[7] = crcCheckSum(bufferPacket.sublist(0, 7));
       return    PacketBuilderLogic(seq[0],bufferPacket);
 }
 

@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'packet_builder_logic.dart';
 
-import 'audio_transmitter_logic.dart';
+//import 'audio_transmitter_logic.dart';
 //static const int _AckStartingCharacter = 0x0C;
 class HandshakeDecoder {
   // 56 ביטים = 7 בייטים (Preamble, 5 Bytes ID, CRC)

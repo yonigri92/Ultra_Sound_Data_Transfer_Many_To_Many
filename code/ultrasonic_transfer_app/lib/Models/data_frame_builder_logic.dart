@@ -29,7 +29,7 @@ import 'package:ultrasonic_transfer_app/Models/packet_builder_logic.dart';
             takes Data and transformes it into packages with crc at the end.
             packages will return in array of ints each one of Size 8 bits ready to be sent
             Max capacity: 1270 bytes (254 data packets + 1 EOR).
-            Packet structure: [0:0xAB][1:Seq][2-6:Data][7:CRC8].
+            Packet structure: [0:0x0D][1:Seq][2-6:Data][7:CRC8].
             input: an array of ints each index is a byte
             Logic: 
                   1. take data and send it in Lists of Size 5 each time with cnt++(will be used for seq number)
@@ -50,12 +50,21 @@ import 'package:ultrasonic_transfer_app/Models/packet_builder_logic.dart';
           //but we do need it the reason is for when we recive data we want to be able to ask for the same seq again
           int start = cnt * 5;
           int end = (start + 5 > data.length) ? data.length : start + 5;
-          newPacket.add (PacketBuilderLogic.createPacket(Uint8List.fromList([cnt]),data.sublist(start,end)));  
+         
+          Uint8List chunk = data.sublist(start, end);
+          if (chunk.length < 5) {
+          final paddedChunk = Uint8List(5); 
+          paddedChunk.setRange(0, chunk.length, chunk); 
+          chunk = paddedChunk;
+        }
+
+
+          newPacket.add (PacketBuilderLogic.createPacket(Uint8List.fromList([cnt]),chunk));  
           cnt++;
           if(data.length<=cnt*5) endOfMessageFlag = true;
           }
-          Uint8List lastSeq = Uint8List.fromList([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-          newPacket.add (PacketBuilderLogic.createPacket(Uint8List.fromList([cnt]),lastSeq));  
+          Uint8List lastSeq = Uint8List.fromList([cnt, 0xFF, 0xFF, 0xFF, 0xFF]);
+          newPacket.add (PacketBuilderLogic.createPacket(Uint8List.fromList([255]),lastSeq));  //seq of EOF is allways 255
           DataFrameBuilderLogic newMessage = DataFrameBuilderLogic(newPacket.length);
           for (int i = 0 ; i <newPacket.length ;i ++){
             newMessage.messages[i] = newPacket[i];
@@ -63,24 +72,34 @@ import 'package:ultrasonic_transfer_app/Models/packet_builder_logic.dart';
         return newMessage;
 
     } 
-    bool reciveDataFrameBuilderLogic(Uint8List newData){
+    PacketBuilderLogic? reciveDataFrameBuilderLogic(Uint8List newData){
       /*
       this Method will recive Packet of a message will understand if it not corrupted
       and if its fine will throw the 10101011, will throw Seq(its saved allready), 
       throw CRC and save the 5 data bits inside correnct message
       input: packet
-      output: true if data was recived correctly false otherwise
+      output: packet if data was recived correctly  otherwise null
       */
      try{
 
         PacketBuilderLogic newPacket = PacketBuilderLogic.fromPacket(newData);
-        if(messages[newPacket.seq] != null)   return false;//Allready recived this data packet
-        if(length < newPacket.seq) length = newPacket.seq;
-        Uint8List cleanData = newPacket.packet.sublist(2, 7);
+        if(messages[newPacket.seq] != null)   return null;//Allready recived this data packet
+
+       // if (length == 256 || length < newPacket.seq) {length = newPacket.seq;}
+      //   if (newData[2] == 255) {
+      //   length = newPacket.seq; 
+      // }
+
+
+        Uint8List cleanData = newPacket.packet;
         messages[newPacket.seq] = PacketBuilderLogic(newPacket.seq, cleanData);
+        if (newPacket.seq == 255) {
+          length = newData[2]; 
+        }
+        return newPacket;
      }
-      catch(e){ return false;}
-     return true; 
+      catch(e){ print("FromPacket Failed Error: $e");return null;}
+    
     }
 
     Uint8List reconstruct() {
@@ -91,6 +110,19 @@ import 'package:ultrasonic_transfer_app/Models/packet_builder_logic.dart';
       }
       builder.add(messages[i]!.packet);
       }
-      return builder.takeBytes();
+      
+      clear();
+      Uint8List bytes = builder.takeBytes();
+      int end = bytes.length;
+      while (end > 0 && bytes[end - 1] == 0) end--;
+      return bytes.sublist(0, end);
     }
+    void clear() {
+    /*
+    Clears all stored packets and resets the length.
+    This frees up the memory and prevents leakage after reconstruction.
+    */
+    messages.fillRange(0, 256, null); 
+    length = 1; 
+  }
 }
