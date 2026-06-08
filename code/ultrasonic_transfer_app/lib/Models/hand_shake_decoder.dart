@@ -26,16 +26,18 @@ class HandshakeDecoder {
    throw Exception("Handshake CRC mismatch");
   }
 
-  
+  //deletes the preamble{
   List<int> extractedUserId = List.filled(5, 0);
   for (int i = 0; i < 5; i++) {
     extractedUserId[i] = ((frame[i] & 0x0F) << 4) | (frame[i + 1] >> 4);
   }
-
+  //}
+  //go over the id bits and extract{
   int deviceId = 0;
   for (int byte in extractedUserId) {
     deviceId = (deviceId << 8) | byte;
   }
+  //}
   print("SUCCESS: Handshake detected! ID: $deviceId");
   
   return deviceId;
