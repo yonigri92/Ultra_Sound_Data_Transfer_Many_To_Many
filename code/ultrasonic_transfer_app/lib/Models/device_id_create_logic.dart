@@ -13,7 +13,7 @@ class DeviceIdCreateLogic {
   static const String _storageKey = 'unique_device_id';
   // Create an instance of the secure storage.
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
-
+  String? _cachedShortId;
   Future<String> getOrCreateId() async {
     // Read the existing ID from the secure storage
     String? existingId = await _secureStorage.read(key: _storageKey);
@@ -32,4 +32,23 @@ class DeviceIdCreateLogic {
     String fullUuid = await getOrCreateId();
     return fullUuid.replaceAll('-', '').substring(0, 10);
   }
-}
+  Future<String> getShortId() async {
+    if (_cachedShortId != null) {
+      return _cachedShortId!;
+    }
+
+    print("DeviceIdCreateLogic: Short ID Cache is null. Fetching from Storage...");
+    String uniqueDeviceId = await get40BitId();
+
+    
+    _cachedShortId = uniqueDeviceId.substring(uniqueDeviceId.length - 2).toUpperCase();
+
+    print("DeviceIdCreateLogic: Extracted and cached Short ID String: $_cachedShortId");
+    return _cachedShortId!;
+  }
+}  
+
+
+
+
+

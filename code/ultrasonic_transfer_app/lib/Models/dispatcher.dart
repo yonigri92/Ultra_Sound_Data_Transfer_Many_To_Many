@@ -5,6 +5,7 @@ import 'hand_shake_decoder.dart';
 import 'data_frame_builder_logic.dart';
 import 'packet_builder_logic.dart';
 import 'handshake_frame_builder_logic.dart';
+import 'device_id_create_logic.dart';
 class Dispatcher{
 
   final List<int> _symbolBuffer = List.filled(24, 0, growable: true);
@@ -21,7 +22,13 @@ class Dispatcher{
   final List<Uint8List> _ackQueue = [];
   final Map<int, int> _packetAttempts = {};// counter for each packet
   bool _isWorkerRunning = false;
+  bool get isWorkerRunning => _isWorkerRunning;
   Dispatcher(this._transmitter);
+
+  bool _receivedImplicitAck = false; 
+  bool _isLeafNode = false;
+  final Map<int, bool> _myChildrenMap = {}; 
+  int _expectedPacketsCount = 0;
   Future<void> pushSymbol(int symbol, Function(String deviceId) onPacketDetected) async {
       if (symbol == -1) return;
       
@@ -55,6 +62,14 @@ class Dispatcher{
           alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
         }
         frame = alignedFrame; 
+      }
+      else if ((frame[5] >> 4) == 0x0E) {
+            preamble = 0x0E;
+            Uint8List alignedFrame = Uint8List(8);
+            for (int i = 0; i < 7; i++) {
+              alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
+            }
+            frame = alignedFrame; 
       } 
       
        else if ((frame[9] >> 4) == 0x0C) {
@@ -98,7 +113,10 @@ class Dispatcher{
           }
           
           break; 
-          
+        case 0x0E:
+        print("Routing to Stage 2: Chain Formation");
+        _handleStage2ChainFormation(frame, onPacketDetected);
+        break;
         case 0x0C:
           // ACK Packet
           /*
@@ -319,7 +337,148 @@ class Dispatcher{
     _isWorkerRunning = false; 
     print("Worker: All queues empty. Going to sleep.");
   }
+  void resetTopology() {
+  _recentReceivedPackets.clear();
+  print("Dispatcher: Topology table cleared successfully.");
 }
+//stage 2:!!!!!!!!!!!!!!!!!!!!
+    Future<void> _handleStage2ChainFormation(Uint8List frame, Function(String deviceId) onPacketDetected) async {
+    String chainKey = frame.sublist(0, 7).join(',');
+    
+    if (_ignorePackets.containsKey(chainKey)) {
+      print("Dispatcher: Listening to our own Chain Frame. Ignoring.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+    
+    if (PacketBuilderLogic.crcCheckSum(frame) != 0) {
+      print("Dispatcher: Stage 2 CRC8 Verification Failed. Dropping frame.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+
+    try {
+     
+      String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+      int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+      print("Dispatcher: Processing Verified Stage 2 Frame: $frame");
+
+
+      
+      bool myIdFound = frame.sublist(1, 6).contains(myShortIdByte);
+
+      if (myIdFound) {
+        print("Dispatcher: Received Implicit ACK for String ID $myShortIdStr. Stopping retries.");
+        _receivedImplicitAck = true; 
+
+        
+        List<int> idSlots = frame.sublist(1, 6); 
+        int myIndexInSlots = idSlots.indexOf(myShortIdByte);
+        
+       
+        if (myIndexInSlots != -1 && myIndexInSlots < idSlots.length - 1) {
+          int childId = idSlots[myIndexInSlots + 1];
+          
+          if (childId != 0x00) {
+            
+            if (!_myChildrenMap.containsKey(childId)) {
+              _myChildrenMap[childId] = true; 
+              _expectedPacketsCount++;       
+              print("Dispatcher: Direct child detected! Child ID: $childId. Total expected return packets: $_expectedPacketsCount");
+            }
+          }
+        }
+
+        _symbolBuffer.fillRange(0, 24, 0);
+        return; 
+      }
+
+      int backoffMs = _calculateHashBackoff(myShortIdStr);
+      print("Dispatcher: ID not in frame. Waiting backoff of ${backoffMs}ms."); 
+      await Future.delayed(Duration(milliseconds: backoffMs));
+
+      
+      int nextFreeIndex = _findNextAvailableSlotIndex(frame.sublist(1, 6));
+
+      if (nextFreeIndex != -1) {
+        Uint8List outboundFrame = Uint8List.fromList(frame);
+        
+        
+        outboundFrame[1 + nextFreeIndex] = myShortIdByte;
+        
+        outboundFrame[6] = 0x00; 
+        outboundFrame[7] = PacketBuilderLogic.crcCheckSum(outboundFrame.sublist(0, 7));
+
+
+        _receivedImplicitAck = false; 
+        _transmitChainWithRetries(outboundFrame, 1);
+      } else {
+        print("Dispatcher: Chain is full, no space for another 4-byte String ID.");
+      }
+
+      _symbolBuffer.fillRange(0, 24, 0); 
+    } catch(e) {
+      print("DEBUG: Stage 2 processing failed: $e");
+    }
+  }
+
+void _transmitChainWithRetries(Uint8List packet, int attempt) async {
+    if (_receivedImplicitAck) {
+      print("Dispatcher: Implicit ACK received, stopping chain retry chain."); 
+      return;
+    }
+
+    if (attempt > 5) {
+      print("Dispatcher: No response after 5 attempts. Confirmed: I am a Leaf Node!"); 
+      _isLeafNode = true; 
+      return;
+    }
+
+    print("Dispatcher: Transmitting Chain Packet, Attempt #$attempt out of 5");
+    
+    String outboundKey = packet.sublist(0, 7).join(',');
+    _ignorePackets[outboundKey] = DateTime.now();
+    Future.delayed(const Duration(seconds: 8), () {
+      _ignorePackets.remove(outboundKey);
+    });
+
+    await _transmitter.transmitFrame(packet); 
+
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      _transmitChainWithRetries(packet, attempt + 1); 
+    });
+  }
+
+  
+  int _findNextAvailableSlotIndex(Uint8List slotRegion) {
+    for (int i = 0; i < slotRegion.length; i++) {
+      if (slotRegion[i] == 0x00) {
+        return i; 
+      }
+    }
+    return -1;
+  }
+int _calculateHashBackoff(String idStr) {
+    int val1 = int.parse(idStr[0], radix: 16); 
+    int val2 = int.parse(idStr[1], radix: 16); 
+
+    int largeVal = val1 > val2 ? val1 : val2;
+    int smallVal = val1 > val2 ? val2 : val1;
+
+    int largeTimer = largeVal * 40; 
+    int smallTimer = smallVal * 10; 
+
+    int tieBreaker = ((idStr.hashCode % 4) + 1) * 25; 
+    int baseDelay = 100; 
+
+    int totalBackoff = baseDelay + largeTimer + smallTimer + tieBreaker;
+    
+    print("Backoff Math for $idStr -> Char1: $val1, Char2: $val2 | Large: $largeVal, Small: $smallVal -> Total Delay: ${totalBackoff}ms");
+    return totalBackoff;
+}
+}
+
+
 
 
 

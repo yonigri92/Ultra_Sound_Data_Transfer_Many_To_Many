@@ -1,12 +1,12 @@
 import 'package:fftea/fftea.dart';
-import 'fsk_fft_demodulator_logic.dart'; // תוודא שהנתיב לקוד שלך נכון
+import 'fsk_fft_demodulator_logic.dart'; 
 
 enum ControlAction {
-  none,                        // שקט או דאטה רגיל - אין שינוי
-  discoveryDetected,           // זוהה אות DISCOVERY רצוף (איפוס רשת)
-  busyDetectedAndAbort,        // אני יזמתי דיסקוברי אבל שמעתי BUSY - עוצרים הכל ולוקחים השהייה (Backoff)
-  busyDetectedAndPropagate,    // שמעתי BUSY מאחרים - משדר BUSY בחזרה ולא מוחק את הרשת הקרובה
-  respondWithBusy              // שמעתי DISCOVERY בזמן שאני באמצע שידור - צריך לענות ב-BUSY
+  none,                        // irrelivent data
+  discoveryDetected,           // heard discovery - transmit discovery freq
+  busyDetectedAndAbort,        // heard busy abort discovery sequence and wait befor starting again(its for whoever started discovery)
+  busyDetectedAndPropagate,    // heard busy sound the busy horn and get 
+  respondWithBusy              // i head discovery but im busy so sound the busy horn and continue data transfer
 }
 
 class FftControlWrapperLogic {
@@ -21,7 +21,8 @@ class FftControlWrapperLogic {
   
   int _consecutiveDiscoveryCount = 0;
   int _consecutiveBusyCount = 0;
-  DateTime? _lastTransmissionTime;
+  DateTime? _lastDiscoveryTxTime;
+  DateTime? _lastBusyTxTime;
   FftControlWrapperLogic(this._originalDemodulator) {
     
     _controlFft = FFT(_originalDemodulator.windowSize);
@@ -61,10 +62,10 @@ class FftControlWrapperLogic {
 
           return ControlAction.busyDetectedAndAbort;
         }
-      if (_lastTransmissionTime != null && DateTime.now().difference(_lastTransmissionTime!).inSeconds < 2) {
+      if (_lastBusyTxTime != null && DateTime.now().difference(_lastBusyTxTime!).inSeconds < 3) {
           return ControlAction.none;
         }
-        _lastTransmissionTime = DateTime.now();
+        _lastBusyTxTime = DateTime.now();
         //  i didnt start  discovery & heard busy- propagate and sound busy as well
         return ControlAction.busyDetectedAndPropagate;
       }
@@ -78,13 +79,17 @@ class FftControlWrapperLogic {
 
       if (_consecutiveDiscoveryCount >= 3) {
         _consecutiveDiscoveryCount = 0; // reset after true identefication
-        if (_lastTransmissionTime != null && DateTime.now().difference(_lastTransmissionTime!).inSeconds < 2) {
+        if (_lastDiscoveryTxTime != null && DateTime.now().difference(_lastDiscoveryTxTime!).inSeconds < 2) {
             return ControlAction.none;
-          }
-        _lastTransmissionTime = DateTime.now();
+        }
+        _lastDiscoveryTxTime = DateTime.now();
         // if i hear discovery and i am busy(middle of getting data- stop for a sec i know it will destroy current package but its worth it)
         // transmit busy and continue listening for more data
         if (isDeviceTransmittingData) {
+          if (_lastBusyTxTime != null && DateTime.now().difference(_lastBusyTxTime!).inSeconds < 3) {
+            return ControlAction.none;
+        }
+        _lastBusyTxTime = DateTime.now();
           return ControlAction.respondWithBusy;
         }
         
@@ -100,4 +105,6 @@ class FftControlWrapperLogic {
     
     return ControlAction.none;
   }
+
+  
 }
