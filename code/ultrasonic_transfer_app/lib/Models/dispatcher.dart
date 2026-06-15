@@ -70,8 +70,23 @@ class Dispatcher{
               alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
             }
             frame = alignedFrame; 
+      }
+      else if ((frame[5] >> 4) == 0x0F) {
+        preamble = 0x0F;
+        Uint8List alignedFrame = Uint8List(8);
+        for (int i = 0; i < 7; i++) {
+          alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
+        }
+        frame = alignedFrame; 
       } 
-      
+      else if ((frame[5] >> 4) == 0x0A) {
+        preamble = 0x0A;
+        Uint8List alignedFrame = Uint8List(8);
+        for (int i = 0; i < 7; i++) {
+          alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
+        }
+        frame = alignedFrame; 
+      }
        else if ((frame[9] >> 4) == 0x0C) {
         preamble = 0x0C;
         Uint8List alignedFrame = Uint8List(8);
@@ -117,6 +132,14 @@ class Dispatcher{
         print("Routing to Stage 2: Chain Formation");
         _handleStage2ChainFormation(frame, onPacketDetected);
         break;
+        case 0x0F:
+          print("Routing to Stage 3: Return Mechanism");
+          _handleStage3ReturnMechanism(frame);
+          break;
+        case 0x0A:
+          print("Routing to Stage 4: Final Distribution & Consumption Mask");
+          _handleStage4Distribution(frame);
+          break;
         case 0x0C:
           // ACK Packet
           /*
@@ -430,7 +453,8 @@ void _transmitChainWithRetries(Uint8List packet, int attempt) async {
 
     if (attempt > 5) {
       print("Dispatcher: No response after 5 attempts. Confirmed: I am a Leaf Node!"); 
-      _isLeafNode = true; 
+      _isLeafNode = true;
+      _initiateStage3Return(packet); 
       return;
     }
 
@@ -448,6 +472,7 @@ void _transmitChainWithRetries(Uint8List packet, int attempt) async {
       _transmitChainWithRetries(packet, attempt + 1); 
     });
   }
+  
 
   
   int _findNextAvailableSlotIndex(Uint8List slotRegion) {
@@ -476,9 +501,282 @@ int _calculateHashBackoff(String idStr) {
     print("Backoff Math for $idStr -> Char1: $val1, Char2: $val2 | Large: $largeVal, Small: $smallVal -> Total Delay: ${totalBackoff}ms");
     return totalBackoff;
 }
+//STAGE 3 BACKWARD
+void _initiateStage3Return(Uint8List stage2Packet) async {
+    print("Dispatcher: Leaf Node initiating Stage 3 Return Mechanism.");
+    String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+    int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+    
+    List<int> idSlots = stage2Packet.sublist(1, 6);
+    int myIndex = idSlots.indexOf(myShortIdByte);
+    
+    if (myIndex > 0) {
+      int parentId = idSlots[myIndex - 1];  
+      
+      Uint8List stage3Frame = Uint8List.fromList(stage2Packet);
+      stage3Frame[0] = 0x0F;        // שינוי פריאמבל לשלב 3 רשמי
+      stage3Frame[6] = parentId;    // השתלת ה-Target ID בבייט 6
+      stage3Frame[7] = PacketBuilderLogic.crcCheckSum(stage3Frame.sublist(0, 7)); // חישוב CRC טאבולרי מעודכן
+      
+      _receivedImplicitAck = false;
+      _transmitStage3WithRetries(stage3Frame, 1);
+    } else {
+      print("Dispatcher: Error - Leaf Node is at index 0? Structural failure.");
+    }
+  }
+
+  // תיקון 2: מתודת השידור החוזר המשלש של שלב 3 שהייתה חסרה אצלך
+  void _transmitStage3WithRetries(Uint8List packet, int attempt) async {
+    if (_receivedImplicitAck) {
+      print("Dispatcher: Stage 3 Implicit ACK received from Parent. Stopping retries.");
+      return;
+    }
+
+    if (attempt > 5) {
+      print("Dispatcher: Stage 3 Parent node failed to respond after 5 attempts.");
+      return;
+    }
+
+    print("Dispatcher: Transmitting Stage 3 Return Packet, Attempt #$attempt out of 5");
+    String outboundKey = packet.sublist(0, 7).join(',');
+    _ignorePackets[outboundKey] = DateTime.now();
+    Future.delayed(const Duration(seconds: 8), () {
+      _ignorePackets.remove(outboundKey);
+    });
+
+    await _transmitter.transmitFrame(packet);
+
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      _transmitStage3WithRetries(packet, attempt + 1);
+    });
+  }
+
+  Future<void> _handleStage3ReturnMechanism(Uint8List frame) async {
+    String returnKey = frame.sublist(0, 7).join(',');
+    
+    if (_ignorePackets.containsKey(returnKey)) {
+      print("Dispatcher: Listening to our own Stage 3 Frame. Ignoring.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+    
+    if (PacketBuilderLogic.crcCheckSum(frame) != 0) {
+      print("Dispatcher: Stage 3 CRC8 Verification Failed. Dropping frame.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+
+    try {
+      String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+      int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+      
+      int targetId = frame[6]; 
+      List<int> idSlots = frame.sublist(1, 6);
+      int myIndex = idSlots.indexOf(myShortIdByte);
+
+      
+      if (myIndex != -1) {
+        for (int i = 0; i < myIndex; i++) {
+          if (idSlots[i] != 0x00 && frame[6] == idSlots[i]) {
+             print("Dispatcher: Overheard active ancestor upstream transmission. Stopping our Stage 3 retries.");
+             _receivedImplicitAck = true;
+             _symbolBuffer.fillRange(0, 24, 0);
+             return;
+          }
+        }
+      }
+
+      
+      if (targetId == myShortIdByte) {
+        if (myIndex != -1 && myIndex < idSlots.length - 1) {
+          int senderId = idSlots[myIndex + 1];
+          
+        
+          if (_myChildrenMap.containsKey(senderId) && _myChildrenMap[senderId] == true) {
+            _myChildrenMap[senderId] = false; 
+            _expectedPacketsCount--;        
+            print("Dispatcher: Valid Stage 3 packet received from child $senderId. Remaining children to wait for: $_expectedPacketsCount");
+            
+            // (Join Barrier) 
+            if (_expectedPacketsCount == 0) {
+              print("Dispatcher: Join Barrier Broken! All expected children branches merged.");
+              
+              if (myIndex == 0) {
+                print("Dispatcher: Root Node received all branches! Transitioning to Stage 4 (Final Distribution).");
+                _initiateStage4Distribution(frame);
+              } else {
+               //combine brothers
+                int myParentId = idSlots[myIndex - 1];
+                Uint8List combinedFrame = Uint8List(8);
+                
+                combinedFrame[0] = 0x0F; 
+                
+                
+                for (int i = 0; i <= myIndex; i++) {
+                  combinedFrame[1 + i] = idSlots[i];
+                }
+                
+                
+                int nextSlotIdx = myIndex + 1;
+                _myChildrenMap.forEach((childId, _) {
+                  if (nextSlotIdx < 5) {
+                    combinedFrame[1 + nextSlotIdx] = childId;
+                    nextSlotIdx++;
+                  }
+                });
+                
+                combinedFrame[6] = myParentId;
+                combinedFrame[7] = PacketBuilderLogic.crcCheckSum(combinedFrame.sublist(0, 7));
+                
+                print("Dispatcher: Upstream Merged Frame Created: $combinedFrame");
+                _receivedImplicitAck = false;
+                _transmitStage3WithRetries(combinedFrame, 1);
+              }
+            } else {
+              print("Dispatcher: Join Barrier Active. Still holding packet upstream until all branches arrive.");
+            }
+          }
+        }
+      }
+      _symbolBuffer.fillRange(0, 24, 0);
+    } catch(e) {
+      print("DEBUG: Stage 3 handling failed: $e");
+    }
+    
+  
+  }
+  // --- STAGE 4 IMPLEMENTATION ---
+  Future<void> _handleStage4Distribution(Uint8List frame) async {
+    String stage4Key = frame.sublist(0, 7).join(',');
+    
+    if (_ignorePackets.containsKey(stage4Key)) {
+      print("Dispatcher: Listening to our own Stage 4 Frame. Ignoring.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+    
+    if (PacketBuilderLogic.crcCheckSum(frame) != 0) {
+      print("Dispatcher: Stage 4 CRC8 Verification Failed. Dropping frame.");
+      _symbolBuffer.fillRange(0, 24, 0);
+      return;
+    }
+
+    try {
+      String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+      int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+      
+      List<int> idSlots = frame.sublist(1, 6); 
+      bool myIdFound = idSlots.contains(myShortIdByte);
+      int myIndex = idSlots.indexOf(myShortIdByte);
+
+      if (!myIdFound) {
+        print("Dispatcher: Stage 4 Overheard, but my short ID ($myShortIdStr) is missing from topology.");
+        print("Dispatcher: Confirmed - I am excluded from this network instance. Resetting to Idle.");
+        
+        resetTopology(); 
+        _symbolBuffer.fillRange(0, 24, 0);
+        return; 
+      }
+
+      print("Dispatcher: Confirmed! I am part of the active network topology. Processing Consumption Mask...");
+      int consumptionMask = frame[6]; 
+
+     
+      int myBitPosition = 6 - myIndex;
+      
+      int leftmostActiveSlot = -1;
+      for (int i = 5; i >= 1; i--) {
+        if (((consumptionMask >> i) & 1) == 1) {
+          leftmostActiveSlot = i;
+          break; 
+        }
+      }
+
+      if (leftmostActiveSlot == myBitPosition) {
+        print("Dispatcher: It's my turn in Stage 4! Slot Index: $myIndex, Bit Position: $myBitPosition");
+        
+        
+        Uint8List nextFrame = Uint8List.fromList(frame);
+        nextFrame[6] = consumptionMask & ~(1 << myBitPosition); //turn off personal bit
+        nextFrame[7] = PacketBuilderLogic.crcCheckSum(nextFrame.sublist(0, 7)); 
+        ////////////// תריך להוסיף פה הוספת הפקטא למאגר הנתונים שלנו סוג של RETURN לAPI ובוא רשימת המכשירים הקיימים ברשת
+        
+        print("Dispatcher: Propagating updated Stage 4 frame down the chain: $nextFrame");
+        _receivedImplicitAck = false;
+        _transmitStage4WithRetries(nextFrame, 1);  
+        
+      } else {
+        // if who ever tranmitted is child
+        if (leftmostActiveSlot < myBitPosition && leftmostActiveSlot != -1) {
+          print("Dispatcher: Overheard my child/descendant transmitting updated mask. Stage 4 Implicit ACK confirmed.");
+          _receivedImplicitAck = true; 
+        }
+        
+        _symbolBuffer.fillRange(0, 24, 0);
+        return;
+      }
+
+      _symbolBuffer.fillRange(0, 24, 0);
+    } catch (e) {
+      print("DEBUG: Stage 4 handling failed: $e");
+    }
+  }
+  //init stage 4 root
+  void _initiateStage4Distribution(Uint8List stage3Packet) async {
+    print("Dispatcher: Root Node initiating Stage 4 Final Distribution.");
+    List<int> idSlots = stage3Packet.sublist(1, 6);
+    
+    Uint8List stage4Frame = Uint8List(8);
+    stage4Frame[0] = 0x0A; 
+    
+    
+    for (int i = 0; i < 5; i++) {
+      stage4Frame[1 + i] = idSlots[i];
+    }
+    
+    
+    int mask = 0;
+    for (int i = 1; i < 5; i++) {
+      if (idSlots[i] != 0x00) {
+        mask |= (1 << (6 - i));
+      }
+    }
+    stage4Frame[6] = mask; 
+    
+    
+    stage4Frame[7] = PacketBuilderLogic.crcCheckSum(stage4Frame.sublist(0, 7));
+    
+    print("Dispatcher: Stage 4 Initial Frame Created by Root (No Target ID): $stage4Frame");
+    _receivedImplicitAck = false;
+    _transmitStage4WithRetries(stage4Frame, 1);
+  }
+  void _transmitStage4WithRetries(Uint8List packet, int attempt) async {
+   
+    if (_receivedImplicitAck) {
+      print("Dispatcher: Stage 4 ACK / Implicit ACK received. Stopping distribution retries.");
+      return;
+    }
+
+    if (attempt > 5) {
+      print("Dispatcher: Stage 4 Distribution failed to reach child after 5 attempts. Path broken.");
+      return;
+    }
+
+    print("Dispatcher: Transmitting Stage 4 Distribution Packet, Attempt #$attempt out of 5");
+    String outboundKey = packet.sublist(0, 7).join(',');
+    _ignorePackets[outboundKey] = DateTime.now();
+    Future.delayed(const Duration(seconds: 8), () {
+      _ignorePackets.remove(outboundKey);
+    });
+
+    await _transmitter.transmitFrame(packet);
+
+    
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      _transmitStage4WithRetries(packet, attempt + 1);
+    });
+  }
 }
-
-
 
 
 
