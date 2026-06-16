@@ -2,20 +2,25 @@ import 'dart:typed_data';
 import 'dispatcher.dart'; 
 import 'fsk_control_wrapper_logic.dart';
 import 'fft_control_wrapper_logic.dart';
-
+import 'dart:async';
+import 'package:ultrasonic_transfer_app/Models/device_id_create_logic.dart';
 class ControlDispatcherWrapper {
   final Dispatcher _originalDispatcher;
   final FskControlWrapperLogic _txWrapper;
 
-  
+  final StreamController<TopologyEvent> _eventController = StreamController<TopologyEvent>.broadcast();
+  Stream<TopologyEvent> get topologyStream => _eventController.stream;
   bool _amITheDiscoveryInitiator = false;
   DateTime? _backoffUntil;
 
   int _discoveryAttempts = 0;
   static const int _maxDiscoveryAttempts = 5;
   bool _isValidDiscoveryChain = false;
-  ControlDispatcherWrapper(this._originalDispatcher, this._txWrapper);
-
+  ControlDispatcherWrapper(this._originalDispatcher, this._txWrapper) {
+    _originalDispatcher.onDiscoveryFinished = () {
+      _eventController.add(TopologyEvent.discoveryFinished);
+    };
+  }
   
   bool get amITheDiscoveryInitiator => _amITheDiscoveryInitiator;
   
@@ -78,16 +83,16 @@ class ControlDispatcherWrapper {
         print("Wrapper: Valid Discovery detected. Requesting topology reset from original dispatcher.");
         _amITheDiscoveryInitiator = false;
         
-        // הוא אמור להמשיך את האות ולחכות 4 שניות כמו מי שהתחיל
-        _txWrapper.startControlTone(0); // המשך האות
-        _isValidDiscoveryChain = true; // סימון שהתחלנו שרשרת תקינה
+        
+        _txWrapper.startControlTone(0); 
+        _isValidDiscoveryChain = true; 
         
         Future.delayed(const Duration(seconds: 4), () {
-          // ואם הכל תקין - לא שמע BUSY ב4 שניות הבאות, למחוק את רשימת המכשירים המוכרים ולעבור לשלב ב
+          
           if (_isValidDiscoveryChain) {
             print("Wrapper: 4 seconds passed without BUSY. Proceeding to Stage 2.");
-            _originalDispatcher.resetTopology(); // מחיקת מכשירים מוכרים
-            _proceedToNextStage(); // מעבר לשלב ב'
+            _originalDispatcher.resetTopology(); 
+            _proceedToNextStage(); 
           }
         });
         break;
@@ -110,7 +115,7 @@ class ControlDispatcherWrapper {
       case ControlAction.busyDetectedAndPropagate:
         print("Wrapper: Heard BUSY from peer. Propagating BUSY horn.");
         _txWrapper.startControlTone(1);
-        _isValidDiscoveryChain = false; // חותך את הרצף של ה-4 שניות ומבטל את המעבר לשלב ב'
+        _isValidDiscoveryChain = false; 
         break;
 
       case ControlAction.none:
@@ -119,13 +124,22 @@ class ControlDispatcherWrapper {
   }
 
 
+void _proceedToNextStage() async {
+    print("Wrapper: Transitioning to Stage 2. Triggering initial chain formation.");
+    
+    
+    _eventController.add(TopologyEvent.discoveryStarted); // tell the api we started stage 2
+    
+    String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+    int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+    
+    _originalDispatcher.initiateStage2AsRoot(myShortIdByte);// start stage 2
+  }
+  
   Future<void> pushSymbol(int symbol, Function(String deviceId) onPacketDetected) =>
       _originalDispatcher.pushSymbol(symbol, onPacketDetected);
 
+  
   Future<void> addDataPacketToQueue(Uint8List data) =>
       _originalDispatcher.addDataPacketToQueue(data);
-  void _proceedToNextStage() {
-    print("Wrapper: Transitioning to Stage 2.");
-    // כאן יבוא הקוד שלכם שמפעיל את השלב הבא בפרוטוקול 
-  }
 }

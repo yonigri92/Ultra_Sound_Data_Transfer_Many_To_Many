@@ -6,8 +6,12 @@ import 'data_frame_builder_logic.dart';
 import 'packet_builder_logic.dart';
 import 'handshake_frame_builder_logic.dart';
 import 'device_id_create_logic.dart';
+enum TopologyEvent {
+  discoveryStarted,  // "אל תעשה כלום, אנחנו בדיסקברי עכשיו"
+  discoveryFinished, // "סיימנו, קח את נתוני המפה"
+}
 class Dispatcher{
-
+  Function()? onDiscoveryFinished;
   final List<int> _symbolBuffer = List.filled(24, 0, growable: true);
   final HandshakeDecoder _handshakeDecoder = HandshakeDecoder();
   final Map<int, DateTime> _recentReceivedPackets = {};//this is the saved data of all the recent recived messeges, 
@@ -22,6 +26,7 @@ class Dispatcher{
   final List<Uint8List> _ackQueue = [];
   final Map<int, int> _packetAttempts = {};// counter for each packet
   bool _isWorkerRunning = false;
+  List<int> latestTopology = [];
   bool get isWorkerRunning => _isWorkerRunning;
   Dispatcher(this._transmitter);
 
@@ -365,6 +370,23 @@ class Dispatcher{
   print("Dispatcher: Topology table cleared successfully.");
 }
 //stage 2:!!!!!!!!!!!!!!!!!!!!
+    void initiateStage2AsRoot(int myShortIdByte) {
+    Uint8List rootFrame = Uint8List(8);
+    rootFrame[0] = 0x0E;          
+    rootFrame[1] = myShortIdByte;
+    
+    rootFrame[6] = 0x00; 
+    rootFrame[7] = PacketBuilderLogic.crcCheckSum(rootFrame.sublist(0, 7)); // ה-CRC8 הטאבולרי שלך
+
+    print("Dispatcher: Root initiating Stage 2 Discovery Chain: $rootFrame");
+    _receivedImplicitAck = false;
+    
+   
+    _transmitChainWithRetries(rootFrame, 1); 
+  }
+
+
+
     Future<void> _handleStage2ChainFormation(Uint8List frame, Function(String deviceId) onPacketDetected) async {
     String chainKey = frame.sublist(0, 7).join(',');
     
@@ -700,7 +722,8 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
         nextFrame[6] = consumptionMask & ~(1 << myBitPosition); //turn off personal bit
         nextFrame[7] = PacketBuilderLogic.crcCheckSum(nextFrame.sublist(0, 7)); 
         ////////////// תריך להוסיף פה הוספת הפקטא למאגר הנתונים שלנו סוג של RETURN לAPI ובוא רשימת המכשירים הקיימים ברשת
-        
+        latestTopology = List.from(idSlots);
+        onDiscoveryFinished?.call();
         print("Dispatcher: Propagating updated Stage 4 frame down the chain: $nextFrame");
         _receivedImplicitAck = false;
         _transmitStage4WithRetries(nextFrame, 1);  
