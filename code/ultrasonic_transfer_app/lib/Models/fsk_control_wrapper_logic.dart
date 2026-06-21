@@ -38,7 +38,10 @@ class FskControlWrapperLogic {
     _controlPhase = 0.0;
     _isControlFinished = false;
 
-    _controlSamplesLeft = (_originalFsk.sampleRate * 0.3).round();
+    //_controlSamplesLeft = (_originalFsk.sampleRate * 0.5).round();
+  
+  _controlSamplesLeft = (_originalFsk.sampleRate * 5.0).round();
+  
   }
 
 

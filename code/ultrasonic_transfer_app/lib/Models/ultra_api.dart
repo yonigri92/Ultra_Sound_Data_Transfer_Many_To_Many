@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:typed_data';
-import 'dart:async'; // הוספנו בשביל ההאזנה לסטרים
+import 'dart:async'; 
 import 'fsk_modulation_logic.dart';
 import 'audio_transmitter_logic.dart';
 import 'audio_receiver_logic.dart'; 
 import 'dispatcher.dart'; 
-import 'fsk_control_wrapper_logic.dart'; // תוודא שהקובץ הזה קיים אצלך
-import 'control_dispatcher_wrapper_logic.dart'; // תוודא שזה שם הקובץ של הראפר
+import 'fsk_control_wrapper_logic.dart'; 
+import 'control_dispatcher_wrapper_logic.dart'; 
 import 'device_id_create_logic.dart';
+
+enum TopologyEvent {
+  discoveryStarted,  // "אל תעשה כלום, אנחנו בדיסקברי עכשיו"
+  discoveryFinished, // "סיימנו, קח את נתוני המפה"
+}
+int? _selectedTargetIndex;
 class UltraApiInterface extends StatefulWidget {
   const UltraApiInterface({super.key});
 
@@ -21,7 +27,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   String lastReceivedMessage = "------";
   bool isListening = false;
 
-  // === משתנים חדשים לניהול הדיסקברי והמכשירים ===
+  // === משתנים לניהול הדיסקברי והמכשירים ברשת ===
   List<int> _discoveredDevices = []; 
   int? _selectedTargetDevice; 
   StreamSubscription? _topologySubscription; // שומר על הצינור פתוח
@@ -32,7 +38,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   late AudioTransmitter _transmitter;
   late AudioReceiver _receiver;
   
-  // היררכיית השליטה החדשה
+  // היררכיית השליטה 
   late Dispatcher _dispatcher; 
   late FskControlWrapperLogic _txWrapper;
   late ControlDispatcherWrapper _wrapper; 
@@ -40,19 +46,19 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   @override
   void initState() {
     super.initState();
+    _modulator = FskModulationLogic();
     
-    // 1. אתחול מנוע השידור
-    _modulator = FskModulationLogic(); 
-    _transmitter = AudioTransmitter(_modulator);
+    // J. אתחול מנוע השידור
+    _txWrapper = FskControlWrapperLogic(_modulator);
+    _transmitter = AudioTransmitter(_txWrapper);
     _initTransmitterEngine();
 
-    // 2. בניית השרשרת: דיספצ'ר -> שליטת FSK -> מעטפת (ראפר)
+    // I. בניית השרשרת: דיספצ'ר -> שליטת FSK -> מעטפת (ראפר)
     _dispatcher = Dispatcher(_transmitter);
-    _txWrapper = FskControlWrapperLogic(_modulator);
-    _wrapper = ControlDispatcherWrapper(_dispatcher, _txWrapper);
+    _wrapper = ControlDispatcherWrapper(_dispatcher, _txWrapper, _transmitter);
 
-    // 3. === חיבור הצינור! ה-API מאזין לאירועי הרשת ===
-    _topologySubscription = _wrapper.topologyStream.listen((event) {
+    // H. === חיבור הצינור! ה-API מאזין לאירועי הרשת ===
+    _topologySubscription = _wrapper.topologyStream.listen((event) async { // קולבק הפך ל-async לטובת שליפת המזהה העצמי
       if (event == TopologyEvent.discoveryStarted) {
         setState(() {
           status = "Discovery Started! Scanning room...";
@@ -60,19 +66,36 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
           _selectedTargetDevice = null;
         });
       } else if (event == TopologyEvent.discoveryFinished) {
+        // לא צריך לשלוף את ה-ID בשביל הסינון, אלא בשביל להדגיש את המכשיר שלנו בתצוגה
+        String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+        int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+
         setState(() {
           status = "Discovery Complete!";
-          // מושכים את המפה מהדיספצ'ר הישר אל ה-UI
-          _discoveredDevices = _dispatcher.latestTopology;
-          if (_discoveredDevices.isNotEmpty) {
-            _selectedTargetDevice = _discoveredDevices.first; // בוחר את הראשון אוטומטית
+          
+          // 🔥 כאן השינוי: אנחנו לא עושים .where, אלא שומרים את כל המפה בדיוק כפי שהיא התקבלה!
+          // ככה ה-0x00 יישארו והמבנה המלא יישמר.
+          _discoveredDevices = List.from(_dispatcher.latestTopology);
+          
+          // הגדרת יעד ראשוני (לחיצת יד) למכשיר הראשון שהוא לא אנחנו ולא 0x00
+          if (_selectedTargetIndex == null) {
+            var firstValid = _discoveredDevices.indexWhere((id) => id != 0x00 && id != myShortIdByte);
+            if (firstValid != -1) {
+              _selectedTargetIndex = firstValid;
+            }
           }
         });
       }
     });
 
-    // 4. אתחול המקלט והוספת סינון יעד (Routing)
+    // F. בניית המקלט המאוחד: מאזין גם לחלונות גולמיים וגם לסימבולי דאטה
     _receiver = AudioReceiver(
+      // צינור א': בדיקת חלונות קול גולמיים לתדרי שליטה (שלב 1)
+      onWindowAvailable: (List<double> window) {
+        return _wrapper.checkRawAudioWindow(window);
+      },
+      
+      // צינור ב': קבלת סימבולים רגילים של דאטה (שלב 2, 3, 4)
       onSymbolReceived: (int symbol) async {
         await _wrapper.pushSymbol(symbol, (String decodedText) async {
           
@@ -94,14 +117,14 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             }
           } else {
              // טיפול במקרה של הודעת מערכת או הודעה ללא ניתוב תקין
-             if(mounted){
-                setState(() {
-                  lastReceivedMessage = decodedText;
-                });
+             if (mounted) {
+               setState(() {
+                 lastReceivedMessage = decodedText;
+               });
              }
           }
         });
-      }
+      },
     );
   }
 
@@ -159,7 +182,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     setState(() => status = "Sending Message to $targetHex...");
     
     try {
-      // === התיקון הקריטי: שרשור מזהה היעד לתחילת המחרוזת ===
+      // שרשור מזהה היעד לתחילת המחרוזת בצורת פרוטוקול ניתוב אקוסטי
       String routedMessage = "$targetHex:$textToSend";
       Uint8List dataBytes = Uint8List.fromList(routedMessage.codeUnits);
       
@@ -243,8 +266,16 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             ),
             const SizedBox(height: 15),
 
-            // === תפריט גלילה (Dropdown) לבחירת מכשיר יעד שמופיע רק אם מצאנו משהו ===
+            // === תפריט גלילה לבחירת מכשיר יעד שמופיע רק אם מצאנו משהו ברשת ===
             if (_discoveredDevices.isNotEmpty) ...[
+              const Text("Raw Network Topology (Verification Proof):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text(
+              _discoveredDevices.map((id) => "0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}").toString(),
+              style: const TextStyle(fontFamily: 'monospace', color: Colors.blue, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 15),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
@@ -259,7 +290,9 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                     items: _discoveredDevices.map((id) {
                       return DropdownMenuItem<int>(
                         value: id,
-                        child: Text("Device ID: 0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}"),
+                        child: Text(id == 0x00 
+                            ? "Empty Slot: 0x00" 
+                            : "Device ID: 0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}"),
                       );
                     }).toList(),
                     onChanged: (int? newValue) {
@@ -273,7 +306,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
               const SizedBox(height: 20),
             ],
             
-            // תצוגת המידע המשוחזר שנקלט
+            // תצוגת המידע המשוחזר שנקלט מהאוויר
             Column(
               children: [
                 const Text("Last Received Message:", style: TextStyle(fontWeight: FontWeight.bold)),
@@ -292,39 +325,45 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             ),
             const SizedBox(height: 20),
             
-            // תיבת טקסט להקלדת הודעות
-            TextField(
-              controller: _textController,
-              decoration: const InputDecoration(
-                labelText: "Type a message to transmit",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.edit),
+            // === תיבת הטקסט וכפתור השליחה יופיעו אך ורק אם קיימים מכשירים ברשת ===
+            if (_discoveredDevices.isNotEmpty) ...[
+              TextField(
+                controller: _textController,
+                decoration: const InputDecoration(
+                  labelText: "Type a message to transmit",
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.edit),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
+              const SizedBox(height: 12),
+              
+              ElevatedButton.icon(
+                onPressed: _sendMessage,
+                icon: const Icon(Icons.send),
+                label: const Text("Transmit Data Message"),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade100),
+              ),
+              const Divider(height: 30),
+            ],
             
-            // כפתור שליחת ההודעה מהתיבה
-            ElevatedButton.icon(
-              onPressed: _sendMessage,
-              icon: const Icon(Icons.send),
-              label: const Text("Transmit Data Message"),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade100),
-            ),
-            const Divider(height: 30),
-            
-            // כפתורי הנדשייק והאזנה
+            // === ניהול דינמי של כפתורי השליטה בתחתית המסך כדי למנוע כשלים ===
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _sendHandshake, 
-                    icon: const Icon(Icons.handshake),
-                    label: const Text("Handshake"),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade100),
+                // כפתור הנדשייק יוצג אך ורק אם קיימת רשת זמינה לשידור אקטיבי
+                if (_discoveredDevices.isNotEmpty) ...[
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _sendHandshake, 
+                      icon: const Icon(Icons.handshake),
+                      label: const Text("Handshake"),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade100),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
+                  const SizedBox(width: 10),
+                ],
+                
+                // כפתור האזנה תמיד מופיע, ומתרחב לכל רוחב הכרטיס אם אין מכשירים זמינים
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _toggleListening, 

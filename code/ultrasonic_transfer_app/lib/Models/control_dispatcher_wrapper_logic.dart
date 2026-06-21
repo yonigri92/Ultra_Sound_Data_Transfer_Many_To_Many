@@ -4,20 +4,41 @@ import 'fsk_control_wrapper_logic.dart';
 import 'fft_control_wrapper_logic.dart';
 import 'dart:async';
 import 'package:ultrasonic_transfer_app/Models/device_id_create_logic.dart';
+import 'audio_transmitter_logic.dart'; 
+import 'fsk_fft_demodulator_logic.dart';
 class ControlDispatcherWrapper {
   final Dispatcher _originalDispatcher;
   final FskControlWrapperLogic _txWrapper;
-
+  final AudioTransmitter _transmitter;
+  late final FftControlWrapperLogic _rxControlLogic;
   final StreamController<TopologyEvent> _eventController = StreamController<TopologyEvent>.broadcast();
+  bool _isCsmaActive = false;
   Stream<TopologyEvent> get topologyStream => _eventController.stream;
   bool _amITheDiscoveryInitiator = false;
+  bool _isTransmittingBusy = false;
   DateTime? _backoffUntil;
-
+  bool _isDiscoveryRunning = false;
   int _discoveryAttempts = 0;
+  bool _isDiscoveryActive = false;
   static const int _maxDiscoveryAttempts = 5;
   bool _isValidDiscoveryChain = false;
-  ControlDispatcherWrapper(this._originalDispatcher, this._txWrapper) {
-    _originalDispatcher.onDiscoveryFinished = () {
+  Timer? _safetyTimeoutTimer;
+  ControlDispatcherWrapper(this._originalDispatcher, this._txWrapper, this._transmitter) { 
+    _rxControlLogic = FftControlWrapperLogic(FskFftDemodulator());
+    _originalDispatcher.changeToNextStage = changeToNextStage;
+    _originalDispatcher.csmaWait = csmaWait; 
+    _originalDispatcher.onDiscoveryFinished = () async {
+      if (!_isDiscoveryRunning) {
+        _log("Wrapper: Discovery already finished for this cycle. Ignoring duplicate Stage 4 trigger.");
+        return;
+      }
+      _log("Wrapper: Stage 4 Finished and network converged! Releasing the discovery lock.");
+
+      _isDiscoveryRunning = false; 
+      _isDiscoveryActive = false;
+      _amITheDiscoveryInitiator = false;
+      _isValidDiscoveryChain = false;
+      await changeToNextStage();
       _eventController.add(TopologyEvent.discoveryFinished);
     };
   }
@@ -26,27 +47,57 @@ class ControlDispatcherWrapper {
   
   // getter for original dispacher
   bool get isDeviceTransmittingData => _originalDispatcher.isWorkerRunning; 
+  ControlAction checkRawAudioWindow(List<double> window) {
+    ControlAction action = _rxControlLogic.processAudioWindow(
+      audioWindow: window,
+      isDeviceTransmittingData: _originalDispatcher.isWorkerRunning,
+      amITheDiscoveryInitiator: _amITheDiscoveryInitiator,
+    );
 
+    // אם הרדאר תפס משהו - מפעילים מיד את הטיפול האסינכרוני
+    if (action != ControlAction.none) {
+      handleControlAction(action);
+    }
+
+    return action; 
+  }
   Future<void> startDiscoveryWorkflow() async {
+    if (_isDiscoveryRunning) {
+      _log("Wrapper: Discovery workflow is already active. Ignoring UI request.");
+      return;
+    }
+    _isDiscoveryRunning = true;
     _discoveryAttempts = 0; 
     await _executeDiscoveryAttempt();
   }
   Future<void> _executeDiscoveryAttempt() async {
     if (_backoffUntil != null && DateTime.now().isBefore(_backoffUntil!)) {
-      print("Wrapper: Cannot initiate Discovery yet. Backoff timer is active.");
+      _log("Wrapper: Cannot initiate Discovery yet. Backoff timer is active.");
+      _isDiscoveryRunning = false;
       return;
     }
   _discoveryAttempts++;
 
   _amITheDiscoveryInitiator = true;
   _txWrapper.startControlTone(0);
+
+
+  while (!_txWrapper.isFinished) {
+      await _transmitter.transmitControlTone();
+      // השהייה קטנה התואמת לאורך הבאפר (כ-40 מילישניות) כדי לא להציף את כרטיס הקול
+      await Future.delayed(const Duration(milliseconds: 40));
+    }
+
+
+  _isValidDiscoveryChain = true;
+
   Future.delayed(const Duration(seconds: 1), () {
-      if (_amITheDiscoveryInitiator) {
-        print("Wrapper: 1 second passed with clean air. I am the Leader! Proceeding to Stage 2.");
+      if (_amITheDiscoveryInitiator && _isDiscoveryRunning){
+        _log("Wrapper: 1 second passed with clean air. I am the Leader! Proceeding to Stage 2.");
         _originalDispatcher.resetTopology(); 
         _discoveryAttempts = 0; 
         _amITheDiscoveryInitiator = false;
-        _proceedToNextStage();
+        _proceedToNextStage(asRoot: true);
       }
     });
   }
@@ -58,47 +109,87 @@ class ControlDispatcherWrapper {
   /// initiate discovery
   Future<void> initiateDiscoverySequence() async {
     if (_backoffUntil != null && DateTime.now().isBefore(_backoffUntil!)) {
-      print("Wrapper: Cannot initiate Discovery. 5-second ba ckoff timer is active.");
+      _log("Wrapper: Cannot initiate Discovery. 5-second ba ckoff timer is active.");
       return;
     }
     
-    print("Wrapper: Initiating Discovery signal.");
+    _log("Wrapper: Initiating Discovery signal.");
     _amITheDiscoveryInitiator = true;
     _txWrapper.startControlTone(0); //transmit discovery
+    while (!_txWrapper.isFinished) {
+      await _transmitter.transmitControlTone();
+      await Future.delayed(const Duration(milliseconds: 40));
+    }
   }
 
   /// logic from input here
-  void handleControlAction(ControlAction action) {
+  
+  Future<void> handleControlAction(ControlAction action) async {
+
+    bool isPastStage1 = !_originalDispatcher.isStage1Allowed;
+
+    if (_isDiscoveryActive && action == ControlAction.discoveryDetected) {
+    _log("Wrapper: Discovery already active. Ignoring duplicate trigger.");
+    return;
+  }
     if (_backoffUntil != null && DateTime.now().isBefore(_backoffUntil!)) {
       return;
     }
 
     switch (action) {
+      case ControlAction.swallowControlNoise:
+        break;
       case ControlAction.respondWithBusy:
-        print("Wrapper: Heard Discovery while busy. Transmitting BUSY horn.");
+        if (isPastStage1) return;
+        if (_isTransmittingBusy) return;
+        _isTransmittingBusy = true;
+        _log("Wrapper: Heard Discovery while busy. Transmitting BUSY horn.");
         _txWrapper.startControlTone(1); // transmit busy
+        while (!_txWrapper.isFinished) {
+              await _transmitter.transmitControlTone();
+              await Future.delayed(const Duration(milliseconds: 40));
+    }
+        await Future.delayed(const Duration(milliseconds: 500));
+        _isTransmittingBusy = false;
         break;
 
       case ControlAction.discoveryDetected:
-        print("Wrapper: Valid Discovery detected. Requesting topology reset from original dispatcher.");
+        if (_isDiscoveryRunning) {
+          break; 
+        }
+        _isDiscoveryActive = true;
+        _isDiscoveryRunning = true;
+        
+        _log("Wrapper: Valid Discovery detected. Requesting topology reset from original dispatcher.");
         _amITheDiscoveryInitiator = false;
         
         
         _txWrapper.startControlTone(0); 
+        while (!_txWrapper.isFinished) {
+            await _transmitter.transmitControlTone();
+            await Future.delayed(const Duration(milliseconds: 40));
+          }
         _isValidDiscoveryChain = true; 
         
         Future.delayed(const Duration(seconds: 4), () {
           
           if (_isValidDiscoveryChain) {
-            print("Wrapper: 4 seconds passed without BUSY. Proceeding to Stage 2.");
+            _log("Wrapper: 4 seconds passed without BUSY. Proceeding to Stage 2.");
             _originalDispatcher.resetTopology(); 
-            _proceedToNextStage(); 
-          }
+            _proceedToNextStage(asRoot: false);
+            
+            
+          }else {
+          _log("Wrapper: Discovery chain became invalid (BUSY signal detected). Resetting lock.");
+          _isDiscoveryRunning = false; // כישלון מוחלט - משחררים את הנעילה
+          _isDiscoveryActive = false;
+          _resetAllDispatcherGates();
+        }
         });
         break;
 
       case ControlAction.busyDetectedAndAbort:
-        print("Wrapper: I started Discovery but room is BUSY! Activating 5-second backoff.");
+        _log("Wrapper: I started Discovery but room is BUSY! Activating 5-second backoff.");
         _amITheDiscoveryInitiator = false;
         _backoffUntil = DateTime.now().add(const Duration(seconds: 5));
         
@@ -108,38 +199,155 @@ class ControlDispatcherWrapper {
             _executeDiscoveryAttempt();
           });
         } else {
-          print("Wrapper: Max discovery attempts reached. Cannot start DISCOVERY.");
+          _log("Wrapper: Max discovery attempts reached. Cannot start DISCOVERY.");
+          _isDiscoveryRunning = false;
+          _resetAllDispatcherGates();
+          
         }
         break;
 
       case ControlAction.busyDetectedAndPropagate:
-        print("Wrapper: Heard BUSY from peer. Propagating BUSY horn.");
+        if (isPastStage1) {
+           _log("Wrapper: Ignoring BUSY propagation signal because we are already past Stage 1.");
+           break;
+        }
+        if (_isTransmittingBusy) return;
+        _isTransmittingBusy = true;
+        _log("Wrapper: Heard BUSY from peer. Propagating BUSY horn.");
         _txWrapper.startControlTone(1);
+        while (!_txWrapper.isFinished) {
+            await _transmitter.transmitControlTone();
+            await Future.delayed(const Duration(milliseconds: 40));
+          }
+          await Future.delayed(const Duration(milliseconds: 500));
+          _isTransmittingBusy = false;
         _isValidDiscoveryChain = false; 
+        _isDiscoveryRunning = false;
+        _resetAllDispatcherGates();
         break;
 
       case ControlAction.none:
         break;
     }
-  }
 
-
-void _proceedToNextStage() async {
-    print("Wrapper: Transitioning to Stage 2. Triggering initial chain formation.");
-    
-    
-    _eventController.add(TopologyEvent.discoveryStarted); // tell the api we started stage 2
-    
-    String myShortIdStr = await DeviceIdCreateLogic().getShortId();
-    int myShortIdByte = int.parse(myShortIdStr, radix: 16);
-    
-    _originalDispatcher.initiateStage2AsRoot(myShortIdByte);// start stage 2
   }
+      Future<void> changeToNextStage() async {
+
+  if (_originalDispatcher.isStage1Allowed) {
+    _originalDispatcher.isStage1Allowed = false;
+    _originalDispatcher.isStage2Allowed = true;
+    _log("Wrapper: Transitioned to Stage 2");
+  } else if (_originalDispatcher.isStage2Allowed) {
+    _originalDispatcher.isStage2Allowed = false;
+    _originalDispatcher.isStage3Allowed = true;
+    _log("Wrapper: Transitioned to Stage 3");
+  } else if (_originalDispatcher.isStage3Allowed) {
+    _originalDispatcher.isStage3Allowed = false;
+    _originalDispatcher.isStage4Allowed = true;
+    _log("Wrapper: Transitioned to Stage 4");
+  }else if (_originalDispatcher.isStage4Allowed) {
+      _originalDispatcher.isStage4Allowed = false;
+      _originalDispatcher.isStage1Allowed = true; 
+      _log("Wrapper: Stage 4 Completed. Resetting Dispatcher gates back to Stage 1 (Idle Mode)");
+    }
   
+  _isCsmaActive = false;
+}
+  Future<void> csmaWait() async {
+    if (_isCsmaActive) {
+      _log("${DateTime.now().toIso8601String()} | Wrapper: CSMA already active, blocking this request.");
+      return;
+    }
+    _isCsmaActive = true; 
+
+    _originalDispatcher.getSymbolBuffer().fillRange(0, 24, 0);
+   
+    bool isChannelBusy = true;
+    int quietCheckCount = 0;
+    
+    _log("${DateTime.now().toIso8601String()} | Wrapper: Carrier Sensing STARTED.");
+    
+    while (isChannelBusy) {
+      bool hasFskSymbols = _originalDispatcher.getSymbolBuffer().any((sym) => sym != 0);
+      bool isDataWorkerRunning = _originalDispatcher.isWorkerRunning;
+      bool isBusyToneActive = _isTransmittingBusy;
+
+      if (hasFskSymbols || isDataWorkerRunning || isBusyToneActive) {
+        quietCheckCount = 0;
+        await Future.delayed(const Duration(milliseconds: 100));
+      } else {
+        quietCheckCount++;
+        if (quietCheckCount >= 5) {
+          isChannelBusy = false;
+        } else {
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+      }
+    }
+    
+    // 🔥 כאן קורה הרגע המעניין: סיום הבדיקה
+    _log("${DateTime.now().toIso8601String()} | Wrapper: CSMA FINISHED. Air is clear.");
+    _isCsmaActive = false;
+  }
+void _proceedToNextStage({required bool asRoot}) async {
+    _log("Wrapper: Transitioning to Stage 2. Mode -> asRoot: $asRoot");
+    _isValidDiscoveryChain = false; 
+    
+    
+    await changeToNextStage();
+    _log("Wrapper: Gate 2 is OPEN. Gates 3 and 4 are LOCKED.");
+    _eventController.add(TopologyEvent.discoveryStarted); 
+    _safetyTimeoutTimer?.cancel();
+    _safetyTimeoutTimer = Timer(const Duration(seconds: 60), () {
+      if (_isDiscoveryRunning && 
+          _originalDispatcher.isStage3Allowed == false && 
+          _originalDispatcher.isStage4Allowed == false) {
+        _log("Wrapper: WATCHDOG TIMEOUT! Discovery got stuck or orphaned. Force resetting to Stage 1 Idle.");
+        _isDiscoveryRunning = false;
+        _isDiscoveryActive = false;
+        _amITheDiscoveryInitiator = false;
+        _isValidDiscoveryChain = false;
+        
+        _resetAllDispatcherGates(); // נועל את שערים 2, 3, 4
+        _originalDispatcher.isStage1Allowed = true; // 🔓 פותח מחדש את שער 1 להאזנה נקייה!
+        _originalDispatcher.resetTopology();
+        _eventController.add(TopologyEvent.discoveryFinished); // משחרר את ה-UI
+      }
+    });
+    if (asRoot) {
+      String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+      int myShortIdByte = int.parse(myShortIdStr, radix: 16);
+      
+      _originalDispatcher.initiateStage2AsRoot(myShortIdByte); 
+    } else {
+      
+      
+      print("Wrapper: Flag changed successfully. Device is now a verified Stage 2 Follower.");
+    }
+  }
+
+
+
+
+
+
+
+
+
+  void _resetAllDispatcherGates() {
+    _originalDispatcher.isStage2Allowed = false;
+    _originalDispatcher.isStage3Allowed = false;
+    _originalDispatcher.isStage4Allowed = false;
+    print("Wrapper: All linear gatekeepers locked (false).");
+  }
   Future<void> pushSymbol(int symbol, Function(String deviceId) onPacketDetected) =>
       _originalDispatcher.pushSymbol(symbol, onPacketDetected);
 
   
   Future<void> addDataPacketToQueue(Uint8List data) =>
       _originalDispatcher.addDataPacketToQueue(data);
+
+      void _log(String message) {
+    print("${DateTime.now().toIso8601String()} | $message");
+  }
 }

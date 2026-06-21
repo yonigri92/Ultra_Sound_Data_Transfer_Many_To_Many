@@ -30,14 +30,14 @@ class FskFftDemodulator {
     _bin [i]= ((freq[i] * windowSize) / sampleRate).round();//Frequency Resolution - takes care of possible noises
    
    }
-  }
+  } 
 
 int detectBit(List<double> audioWindow) {
   final spectrum = _fft.realFft(audioWindow);
   final magnitudes = spectrum.magnitudes();
   List<double> energy = List<double>.filled(16, 0.0);
   for(int i = 0; i < 16; i++){
-    energy[i] = magnitudes[_bin[i]];
+    energy[i] = magnitudes[_bin[i]]; 
    }
  
   // 1. סף רעש מינימלי (Absolute Floor)

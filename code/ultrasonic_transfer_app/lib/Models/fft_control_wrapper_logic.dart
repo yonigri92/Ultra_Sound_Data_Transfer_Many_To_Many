@@ -6,13 +6,14 @@ enum ControlAction {
   discoveryDetected,           // heard discovery - transmit discovery freq
   busyDetectedAndAbort,        // heard busy abort discovery sequence and wait befor starting again(its for whoever started discovery)
   busyDetectedAndPropagate,    // heard busy sound the busy horn and get 
-  respondWithBusy              // i head discovery but im busy so sound the busy horn and continue data transfer
+  respondWithBusy,
+  swallowControlNoise            // i head discovery but im busy so sound the busy horn and continue data transfer
 }
 
 class FftControlWrapperLogic {
   final FskFftDemodulator _originalDemodulator;
   late final FFT _controlFft;
-
+  
   
   late final int _discoveryBin;
   late final int _busyBin;

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:record/record.dart';
 import 'fsk_fft_demodulator_logic.dart';
-
+import 'fft_control_wrapper_logic.dart';
 //import 'dispatcher.dart';
 class AudioReceiver {
   final FskFftDemodulator _demodulator = FskFftDemodulator();
@@ -17,9 +17,12 @@ class AudioReceiver {
   int _consecutiveCount = 0;
   final Function(int symbol) onSymbolReceived;
   //final Function(String senderId) onPacketReceived;
-  
+  final ControlAction Function(List<double> window)? onWindowAvailable;
   //AudioReceiver({required this.onPacketReceived});
-  AudioReceiver({required this.onSymbolReceived});
+  AudioReceiver({
+    required this.onSymbolReceived,
+    this.onWindowAvailable,
+  });
   
   
   //this is the Listening method, 1. wait for premission from phone to record. 
@@ -54,6 +57,24 @@ class AudioReceiver {
 
     while (_sampleBuffer.length >= _demodulator.windowSize) {
       final window = _sampleBuffer.sublist(0, _demodulator.windowSize);
+
+
+      if (onWindowAvailable != null) {
+        ControlAction action = onWindowAvailable!(window);
+        
+        // אם הראפר זיהה פקודת שליטה (Discovery או BUSY)
+        if (action != ControlAction.none) {
+          // מנקים את החלון מהבאפר ועוברים לחלון הבא - לא מפענחים אותו כסימבול דאטה!
+          _sampleBuffer.removeRange(0, _demodulator.windowSize ~/ 2);
+          continue; 
+        }
+      }
+
+
+
+
+
+
       int currentBit = _demodulator.detectBit(window);
 
       if (currentBit != -1) {
