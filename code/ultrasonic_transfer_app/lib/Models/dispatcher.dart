@@ -46,6 +46,7 @@ class Dispatcher{
   bool _isWatchdogRunning = false;
   bool _stage4TurnExecuted = false;
   int _watchdogCountdown = 10;
+  int _watchdogExtensions = 0;
   final Map<int, bool> _myChildrenMap = {}; 
   int _expectedPacketsCount = 0;
   Future<void> pushSymbol(int symbol, Function(String deviceId) onPacketDetected) async {
@@ -490,7 +491,7 @@ class Dispatcher{
     _expectedPacketsCount = 0; // מומלץ לנקות גם את זה
     _hasJoinedStage2Chain = false; // 🔥 מאפסים את חסם השרשרת
     _stage4TurnExecuted = false;
-
+    _watchdogExtensions = 0;
     _dataQueue.clear();
     _ackQueue.clear();
     _outgoingPackets.clear();
@@ -637,6 +638,10 @@ class Dispatcher{
   }
 
 void _transmitChainWithRetries(Uint8List packet, int attempt) async {
+    if (!isStage2Allowed) {
+        _log("Dispatcher: Stage 2 was aborted. Stopping zombie transmission attempt #$attempt.");
+        return;
+      }
     if (_receivedImplicitAckStage2) {
       _log("Dispatcher: Implicit ACK received, stopping chain retry chain."); 
       return;
@@ -876,22 +881,30 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
 
   void _runWatchdogTick(Uint8List packet) {
     if (!_isWatchdogRunning) return;
-
-    // אם השעון הגיע ל-0 ואין יותר ילדים שמחכים להם - עוברים בבטחה לשלב 4
+    
+    
     if (_watchdogCountdown <= 0) {
       if (_expectedPacketsCount == 0) {
         _log("Watchdog: Network is quiet and all branches merged. Transitioning to Stage 4.");
         _isWatchdogRunning = false;
+        _watchdogExtensions = 0;
         _initiateStage4Distribution(packet);
         return;
       } else {
-        // יש ילדים רשומים שעדיין לא סיימו, נרחיב את החלון לעוד 5 שניות
-        _log("Watchdog: Countdown hit 0 but still waiting for $_expectedPacketsCount children. Extending window.");
-        _watchdogCountdown = 5;
+       
+       if (_watchdogExtensions >= 5) {
+          _log("Watchdog: CRITICAL TIMEOUT! Giving up on missing children. Forcing Stage 4.");
+          _isWatchdogRunning = false;
+          _watchdogExtensions = 0;
+          _initiateStage4Distribution(packet);
+          return;
       }
-    }
+      _watchdogExtensions++;
+        _log("Watchdog: Still waiting for $_expectedPacketsCount children. Extending window (Extension $_watchdogExtensions/3).");
+        _watchdogCountdown = 5;
+    }}
 
-    // הדפסה נקייה פעם אחת בשנייה של הסטטוס
+    
     _log("Watchdog: Waiting in Stage 3... $_watchdogCountdown seconds remaining. Expected children: $_expectedPacketsCount");
     _watchdogCountdown--;
 
@@ -961,8 +974,8 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
         nextFrame[6] = consumptionMask & ~(1 << myBitPosition); //turn off personal bit
         nextFrame[7] = PacketBuilderLogic.crcCheckSum(nextFrame.sublist(0, 7)); 
         ////////////// תריך להוסיף פה הוספת הפקטא למאגר הנתונים שלנו סוג של RETURN לAPI ובוא רשימת המכשירים הקיימים ברשת
-        latestTopology = idSlots.where((id) => id != myShortIdByte).toList();
-        onDiscoveryFinished?.call();
+        latestTopology = List.from(idSlots);
+        
         _log("Dispatcher: Propagating updated Stage 4 frame down the chain: $nextFrame");
         _receivedImplicitAck = false;
         _transmitStage4WithRetries(nextFrame, 1);  
@@ -975,7 +988,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
         }
         if (leftmostActiveSlot == -1 && myIndex == 0 && isStage4Allowed) { 
            
-            latestTopology = idSlots.where((id) => id != myShortIdByte).toList();
+            latestTopology = List.from(idSlots);
             _log("Dispatcher: Root overheard convergence frame. Process successfully finished! Final topology: $latestTopology");
             onDiscoveryFinished?.call();
             // if (changeToNextStage != null) {
@@ -1030,6 +1043,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
    
     if (_receivedImplicitAck) {
       _log("Dispatcher: Stage 4 ACK / Implicit ACK received. Stopping distribution retries.");
+      onDiscoveryFinished?.call();
       return;
     }
 
@@ -1057,6 +1071,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
       } else {
         // אם הגענו לניסיון 6 ואני לא עלה, סימן שלא קיבלתי Implicit ACK מהילד שלי והנתיב נשבר
         _log("Dispatcher: Stage 4 Distribution failed to reach child after 5 attempts. Path broken.");
+        onDiscoveryFinished?.call();
       }
       
       return; // 🔒 ה-return המאובטח ברמת הבלוק הראשי! חוסם ומסיים את הפונקציה הרמטית בכל מצב.

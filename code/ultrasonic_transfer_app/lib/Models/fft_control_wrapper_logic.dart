@@ -45,13 +45,17 @@ class FftControlWrapperLogic {
 
     double discoveryEnergy = magnitudes[_discoveryBin];
     double busyEnergy = magnitudes[_busyBin];
-
+    double totalEnergy = 0;
+    for (int i = 0; i < magnitudes.length; i++) {
+      totalEnergy += magnitudes[i];
+    }
+    double energyAvg = totalEnergy / magnitudes.length;
     
     const double minPower = 0.2;
     const double ratio = 1.5;
 
     // Busy freq
-    if (busyEnergy > minPower && busyEnergy > discoveryEnergy * ratio) {
+    if (busyEnergy > minPower && busyEnergy > discoveryEnergy * ratio && busyEnergy > energyAvg * ratio) {
       _consecutiveDiscoveryCount = 0; // reset discovery freq counter- used to make sure we really heard discovery and not noise
       _consecutiveBusyCount++;
 
@@ -74,7 +78,7 @@ class FftControlWrapperLogic {
     }
 
     // heard discovery 
-    if (discoveryEnergy > minPower && discoveryEnergy > busyEnergy * ratio) {
+    if (discoveryEnergy > minPower && discoveryEnergy > busyEnergy * ratio && discoveryEnergy > energyAvg * ratio) {
       _consecutiveBusyCount = 0; // reset  busy counter- used to make sure we really heard busy and not noise
       _consecutiveDiscoveryCount++;
 

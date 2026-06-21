@@ -10,11 +10,8 @@ import 'fsk_control_wrapper_logic.dart';
 import 'control_dispatcher_wrapper_logic.dart'; 
 import 'device_id_create_logic.dart';
 
-enum TopologyEvent {
-  discoveryStarted,  // "אל תעשה כלום, אנחנו בדיסקברי עכשיו"
-  discoveryFinished, // "סיימנו, קח את נתוני המפה"
-}
-int? _selectedTargetIndex;
+
+
 class UltraApiInterface extends StatefulWidget {
   const UltraApiInterface({super.key});
 
@@ -23,14 +20,14 @@ class UltraApiInterface extends StatefulWidget {
 }
 
 class _UltraApiInterfaceState extends State<UltraApiInterface> {
-  String status = "Ready";
-  String lastReceivedMessage = "------";
+  String status = "System Idle";
+  String lastReceivedMessage = "Waiting for data...";
   bool isListening = false;
 
-  // === משתנים לניהול הדיסקברי והמכשירים ברשת ===
+  // === משתנים לניהול הטופולוגיה ===
   List<int> _discoveredDevices = []; 
-  int? _selectedTargetDevice; 
-  StreamSubscription? _topologySubscription; // שומר על הצינור פתוח
+  int? _selectedTargetIndex; // משתמשים באינדקס כדי למנוע קריסת כפילויות של 0x00
+  int? _myShortIdByte; // שומרים את ה-ID שלנו כדי להציג "ME" ברשת
 
   final TextEditingController _textController = TextEditingController();
 
@@ -38,48 +35,42 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   late AudioTransmitter _transmitter;
   late AudioReceiver _receiver;
   
-  // היררכיית השליטה 
   late Dispatcher _dispatcher; 
   late FskControlWrapperLogic _txWrapper;
   late ControlDispatcherWrapper _wrapper; 
+  StreamSubscription? _topologySubscription;
 
   @override
   void initState() {
     super.initState();
     _modulator = FskModulationLogic();
     
-    // J. אתחול מנוע השידור
     _txWrapper = FskControlWrapperLogic(_modulator);
     _transmitter = AudioTransmitter(_txWrapper);
     _initTransmitterEngine();
 
-    // I. בניית השרשרת: דיספצ'ר -> שליטת FSK -> מעטפת (ראפר)
     _dispatcher = Dispatcher(_transmitter);
     _wrapper = ControlDispatcherWrapper(_dispatcher, _txWrapper, _transmitter);
 
-    // H. === חיבור הצינור! ה-API מאזין לאירועי הרשת ===
-    _topologySubscription = _wrapper.topologyStream.listen((event) async { // קולבק הפך ל-async לטובת שליפת המזהה העצמי
+    _loadMyId(); // טעינת המזהה שלנו מראש לטובת העיצוב הגרפי
+
+    // === האזנה לאירועי הרשת ועדכון UI גרפי ===
+    _topologySubscription = _wrapper.topologyStream.listen((event) async { 
       if (event == TopologyEvent.discoveryStarted) {
         setState(() {
-          status = "Discovery Started! Scanning room...";
+          status = "Radar Active: Scanning Topology...";
           _discoveredDevices.clear();
-          _selectedTargetDevice = null;
+          _selectedTargetIndex = null;
         });
       } else if (event == TopologyEvent.discoveryFinished) {
-        // לא צריך לשלוף את ה-ID בשביל הסינון, אלא בשביל להדגיש את המכשיר שלנו בתצוגה
-        String myShortIdStr = await DeviceIdCreateLogic().getShortId();
-        int myShortIdByte = int.parse(myShortIdStr, radix: 16);
-
         setState(() {
-          status = "Discovery Complete!";
-          
-          // 🔥 כאן השינוי: אנחנו לא עושים .where, אלא שומרים את כל המפה בדיוק כפי שהיא התקבלה!
-          // ככה ה-0x00 יישארו והמבנה המלא יישמר.
+          status = "Network Converged!";
+          // שומרים את כל המפה כולל האפסים כפי שביקשת
           _discoveredDevices = List.from(_dispatcher.latestTopology);
           
-          // הגדרת יעד ראשוני (לחיצת יד) למכשיר הראשון שהוא לא אנחנו ולא 0x00
+          // בחירה אוטומטית של המכשיר האמיתי הראשון ב-Dropdown (לא אנחנו ולא אפס)
           if (_selectedTargetIndex == null) {
-            var firstValid = _discoveredDevices.indexWhere((id) => id != 0x00 && id != myShortIdByte);
+            var firstValid = _discoveredDevices.indexWhere((id) => id != 0x00 && id != _myShortIdByte);
             if (firstValid != -1) {
               _selectedTargetIndex = firstValid;
             }
@@ -88,44 +79,37 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
       }
     });
 
-    // F. בניית המקלט המאוחד: מאזין גם לחלונות גולמיים וגם לסימבולי דאטה
     _receiver = AudioReceiver(
-      // צינור א': בדיקת חלונות קול גולמיים לתדרי שליטה (שלב 1)
-      onWindowAvailable: (List<double> window) {
-        return _wrapper.checkRawAudioWindow(window);
-      },
-      
-      // צינור ב': קבלת סימבולים רגילים של דאטה (שלב 2, 3, 4)
+      onWindowAvailable: (List<double> window) => _wrapper.checkRawAudioWindow(window),
       onSymbolReceived: (int symbol) async {
         await _wrapper.pushSymbol(symbol, (String decodedText) async {
-          
-          // שולפים את ה-ID שלנו כדי לדעת אם ההודעה מיועדת אלינו
-          String myShortIdStr = await DeviceIdCreateLogic().getShortId();
-          
           if (mounted && decodedText.length >= 3 && decodedText[2] == ':') {
             String targetHex = decodedText.substring(0, 2);
             String actualMessage = decodedText.substring(3);
+            
+            String myShortIdStr = _myShortIdByte?.toRadixString(16).toUpperCase().padLeft(2, '0') ?? "XX";
 
-            // בודקים אם היעד הוא אנחנו או שזה שידור לכולם (FF)
             if (targetHex == myShortIdStr || targetHex == "FF") {
               setState(() {
                 lastReceivedMessage = actualMessage;
-                status = "Message Received Successfully!";
+                status = "Incoming Message Received!";
               });
             } else {
               print("API: Message dropped. Target: $targetHex, My ID: $myShortIdStr");
             }
-          } else {
-             // טיפול במקרה של הודעת מערכת או הודעה ללא ניתוב תקין
-             if (mounted) {
-               setState(() {
-                 lastReceivedMessage = decodedText;
-               });
-             }
+          } else if (mounted) {
+             setState(() => lastReceivedMessage = decodedText);
           }
         });
       },
     );
+  }
+
+  Future<void> _loadMyId() async {
+    String myShortIdStr = await DeviceIdCreateLogic().getShortId();
+    setState(() {
+      _myShortIdByte = int.parse(myShortIdStr, radix: 16);
+    });
   }
 
   Future<void> _initTransmitterEngine() async {
@@ -138,14 +122,13 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
 
   @override
   void dispose() {
-    _topologySubscription?.cancel(); // סוגרים את הברז כשיוצאים מהמסך
+    _topologySubscription?.cancel(); 
     _textController.dispose();
     _transmitter.release();
     _receiver.stopListening();
     super.dispose();
   }
 
-  // הפעלת שרשרת הגילוי האוטומטית (שלבים 1 עד 4)
   void _startRoomDiscovery() async {
     setState(() => status = "Initiating Room Discovery...");
     try {
@@ -156,42 +139,40 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   }
 
   void _sendHandshake() async {
-    setState(() => status = "Enqueuing Handshake...");
+    setState(() => status = "Transmitting Handshake...");
     try {
       await _dispatcher.addHandShakePacketToQueue();
-      setState(() => status = "Handshake sent to queue");
+      setState(() => status = "Handshake enqueued");
     } catch (e) {
-      setState(() => status = "Error sending Handshake: $e");
+      setState(() => status = "Handshake Error: $e");
     }
   }
 
   void _sendMessage() async {
     if (_textController.text.trim().isEmpty) return;
     
-    // מזהה ברירת המחדל לשידור לכולם הוא FF
     String targetHex = "FF"; 
     if (_discoveredDevices.isNotEmpty) {
-      if (_selectedTargetDevice == null) {
-        setState(() => status = "Please select a target device first!");
+      if (_selectedTargetIndex == null) {
+        setState(() => status = "Please select a target device slot!");
         return;
       }
-      targetHex = _selectedTargetDevice!.toRadixString(16).toUpperCase().padLeft(2, '0');
+      int targetId = _discoveredDevices[_selectedTargetIndex!];
+      targetHex = targetId.toRadixString(16).toUpperCase().padLeft(2, '0');
     }
 
     String textToSend = _textController.text;
-    setState(() => status = "Sending Message to $targetHex...");
+    setState(() => status = "Routing Message to 0x$targetHex...");
     
     try {
-      // שרשור מזהה היעד לתחילת המחרוזת בצורת פרוטוקול ניתוב אקוסטי
       String routedMessage = "$targetHex:$textToSend";
       Uint8List dataBytes = Uint8List.fromList(routedMessage.codeUnits);
       
-      await _wrapper.addDataPacketToQueue(dataBytes); // שידור ההודעה המנותבת
-      
+      await _wrapper.addDataPacketToQueue(dataBytes); 
       _textController.clear(); 
-      setState(() => status = "Message sent to queue");
+      setState(() => status = "Message transmission sequence started.");
     } catch (e) {
-      setState(() => status = "Error sending message: $e");
+      setState(() => status = "Error routing message: $e");
     }
   }
 
@@ -200,176 +181,329 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
       await _receiver.stopListening();
       setState(() {
         isListening = false;
-        status = "Stopped listening";
+        status = "Mic Off";
       });
       return;
     }
 
     var permStatus = await Permission.microphone.request();
     if (!permStatus.isGranted) {
-      setState(() => status = "Error: need permission");
+      setState(() => status = "Permission Denied");
       openAppSettings();
       return;
     }
 
     setState(() {
       isListening = true;
-      status = "Listening for ultrasonic data...";
+      status = "Listening to Acoustic Channel...";
     });
 
     try {
       await _receiver.startListening();
     } catch (e) {
-      print("Receiver Error: $e");
-      if (mounted) {
-        setState(() {
-          isListening = false;
-          status = "Error: cant start listening";
-        });
-      }
+      if (mounted) setState(() => status = "Receiver Error");
     }
+  }
+
+  // ==== עיצוב גרפי לצומת בודד ברשת ====
+  Widget _buildNetworkNode(int index, int id) {
+    bool isEmpty = id == 0x00;
+    bool isMe = id == _myShortIdByte;
+    
+    Color nodeColor = isMe ? Colors.blue.shade700 : (isEmpty ? Colors.grey.shade300 : Colors.purple.shade600);
+    Color textColor = isEmpty ? Colors.grey.shade600 : Colors.white;
+    String textLabel = isMe ? "ME" : (isEmpty ? "Empty" : "0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}");
+
+    return Column(
+      children: [
+        Container(
+          width: 50,
+          height: 50,
+          decoration: BoxDecoration(
+            color: nodeColor,
+            shape: BoxShape.circle,
+            border: isEmpty ? Border.all(color: Colors.grey.shade400, width: 2) : null,
+            boxShadow: isEmpty ? [] : [
+              BoxShadow(color: nodeColor.withOpacity(0.4), blurRadius: 8, spreadRadius: 2)
+            ],
+          ),
+          alignment: Alignment.center,
+          child: Text(textLabel, style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 11)),
+        ),
+        const SizedBox(height: 6),
+        Text("Slot $index", style: TextStyle(fontSize: 10, color: Colors.grey.shade600)),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 4,
-      margin: const EdgeInsets.all(16),
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 24.0),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text("Ultra API Monitor", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-            const Divider(),
-            
-            // תצוגת סטטוס המערכת
-            Text("Status: $status", 
-              style: TextStyle(
-                color: isListening ? Colors.green : Colors.blue, 
-                fontWeight: FontWeight.w500
-              ),
-              textAlign: TextAlign.center,
+            // Header
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.wifi_tethering, size: 32, color: Colors.deepPurple),
+                const SizedBox(width: 10),
+                const Text("UltraSync Interface", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Colors.black87)),
+              ],
             ),
+            if (_myShortIdByte != null) ...[
+              const SizedBox(height: 6),
+              Center(
+                child: Text(
+                  "MY DEVICE ID: 0x${_myShortIdByte!.toRadixString(16).toUpperCase().padLeft(2, '0')}",
+                  style: TextStyle(
+                    fontSize: 14, 
+                    fontWeight: FontWeight.w700, 
+                    color: Colors.deepPurple.shade700, 
+                    letterSpacing: 1.2
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 15),
 
-            // === כפתור דיסקברי בולט במרכז ===
-            ElevatedButton.icon(
-              onPressed: _startRoomDiscovery, 
-              icon: const Icon(Icons.radar, size: 28),
-              label: const Text("Start Network Discovery", style: TextStyle(fontSize: 16)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple.shade100,
-                padding: const EdgeInsets.symmetric(vertical: 12)
-              ),
-            ),
-            const SizedBox(height: 15),
-
-            // === תפריט גלילה לבחירת מכשיר יעד שמופיע רק אם מצאנו משהו ברשת ===
-            if (_discoveredDevices.isNotEmpty) ...[
-              const Text("Raw Network Topology (Verification Proof):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-            const SizedBox(height: 4),
-            Text(
-              _discoveredDevices.map((id) => "0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}").toString(),
-              style: const TextStyle(fontFamily: 'monospace', color: Colors.blue, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 15),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+            // Status Chip
+            Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade400),
-                  borderRadius: BorderRadius.circular(8),
+                  color: isListening ? Colors.green.shade50 : Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: isListening ? Colors.green.shade200 : Colors.blue.shade200),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(isListening ? Icons.hearing : Icons.info_outline, 
+                        size: 16, color: isListening ? Colors.green.shade700 : Colors.blue.shade700),
+                    const SizedBox(width: 8),
+                    Text(status, style: TextStyle(color: isListening ? Colors.green.shade700 : Colors.blue.shade700, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 25),
+            TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  status = "Network Converged! (SIMULATION)";
+                  // מזריקים מפה פיקטיבית: אנחנו (שולף אוטומטית), מכשיר שני (0xD7), ושני סלוטים ריקים
+                  _discoveredDevices = [_myShortIdByte ?? 0xAA, 0xDB, 0x19, 0x00,0x00];
+                  _selectedTargetIndex = 1; // בוחר אוטומטית במכשיר הפיקטיבי 0xD7
+                });
+              },
+              icon: const Icon(Icons.bug_report, color: Colors.orange),
+              label: const Text("Debug: Simulate Found Device", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 15),
+            // Discovery Button (Main Call to Action)
+            ElevatedButton(
+              onPressed: _startRoomDiscovery, 
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 5,
+                shadowColor: Colors.deepPurple.withOpacity(0.5),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.radar, size: 24),
+                  SizedBox(width: 10),
+                  Text("Initiate Topology Discovery", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 25),
+
+            // === Live Network Map Visualization ===
+            if (_discoveredDevices.isNotEmpty) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [BoxShadow(color: Colors.grey.shade200, blurRadius: 10, spreadRadius: 1)],
+                  border: Border.all(color: Colors.grey.shade100),
+                ),
+                child: Column(
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.hub, color: Colors.deepPurple, size: 20),
+                        SizedBox(width: 8),
+                        Text("Live Network Topology", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                    const Divider(height: 20),
+                    const SizedBox(height: 10),
+                    // ציור האובייקטים ברשת לפי הסדר שלהם במערך
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: List.generate(_discoveredDevices.length, (index) {
+                        return _buildNetworkNode(index, _discoveredDevices[index]);
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // === Dropdown (מוגן מפני קריסות של 0x00) ===
+              const Text("Target Configuration:", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<int>(
                     isExpanded: true,
-                    value: _selectedTargetDevice,
+                    icon: const Icon(Icons.arrow_drop_down, color: Colors.deepPurple),
+                    value: _selectedTargetIndex, 
                     hint: const Text("Select Target Device"),
-                    items: _discoveredDevices.map((id) {
-                      return DropdownMenuItem<int>(
-                        value: id,
-                        child: Text(id == 0x00 
-                            ? "Empty Slot: 0x00" 
-                            : "Device ID: 0x${id.toRadixString(16).toUpperCase().padLeft(2, '0')}"),
-                      );
-                    }).toList(),
-                    onChanged: (int? newValue) {
-                      setState(() {
-                        _selectedTargetDevice = newValue;
-                      });
-                    },
+                    items: [
+                      for (int index = 0; index < _discoveredDevices.length; index++) ...[
+                        if (_discoveredDevices[index] != _myShortIdByte) // 🔒 חוסם ומסנן את עצמי מהרשימה!
+                          DropdownMenuItem<int>(
+                            value: index, // שומרים על האינדקס המקורי בשביל הראוטינג ב-addPacket
+                            enabled: _discoveredDevices[index] != 0x00, // אי אפשר לבחור מקום ריק
+                            child: Text(_discoveredDevices[index] == 0x00 
+                                ? "Slot $index: Empty" 
+                                : "Slot $index: Device 0x${_discoveredDevices[index].toRadixString(16).toUpperCase().padLeft(2, '0')}"),
+                          )
+                      ]
+                    ],
+                    onChanged: (int? newIndex) => setState(() => _selectedTargetIndex = newIndex),
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 25),
             ],
-            
-            // תצוגת המידע המשוחזר שנקלט מהאוויר
-            Column(
-              children: [
-                const Text("Last Received Message:", style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8)),
-                  child: Text(
+
+            // === Data Transfer Area ===
+            if (_discoveredDevices.isNotEmpty) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [BoxShadow(color: Colors.grey.shade200, blurRadius: 10, spreadRadius: 1)],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.message, color: Colors.blue, size: 20),
+                        SizedBox(width: 8),
+                        Text("Data Transfer", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                    const SizedBox(height: 15),
+                    TextField(
+                      controller: _textController,
+                      decoration: InputDecoration(
+                        labelText: "Enter payload...",
+                        filled: true,
+                        fillColor: Colors.blue.shade50.withOpacity(0.5),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        prefixIcon: const Icon(Icons.edit_note),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _sendMessage,
+                        icon: const Icon(Icons.send),
+                        label: const Text("Transmit Payload"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 25),
+            ],
+
+            // === Received Message Display ===
+            // === Received Message Display ===
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.grey.shade800, Colors.black87],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                // שים לב: מחקנו מפה את ה-color כי הגרדיאנט מחליף אותו!
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10)],
+              ),
+              child: Column(
+                children: [
+                  const Text("LATEST INCOMING DATA", style: TextStyle(color: Colors.white70, fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  Text(
                     lastReceivedMessage, 
-                    style: const TextStyle(fontSize: 16, color: Colors.purple, fontWeight: FontWeight.bold),
+                    style: const TextStyle(fontSize: 18, color: Colors.greenAccent, fontFamily: 'monospace', fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-            const SizedBox(height: 20),
-            
-            // === תיבת הטקסט וכפתור השליחה יופיעו אך ורק אם קיימים מכשירים ברשת ===
-            if (_discoveredDevices.isNotEmpty) ...[
-              TextField(
-                controller: _textController,
-                decoration: const InputDecoration(
-                  labelText: "Type a message to transmit",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.edit),
-                ),
-              ),
-              const SizedBox(height: 12),
-              
-              ElevatedButton.icon(
-                onPressed: _sendMessage,
-                icon: const Icon(Icons.send),
-                label: const Text("Transmit Data Message"),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade100),
-              ),
-              const Divider(height: 30),
-            ],
-            
-            // === ניהול דינמי של כפתורי השליטה בתחתית המסך כדי למנוע כשלים ===
+            const SizedBox(height: 25),
+
+            // === Bottom Controls ===
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                // כפתור הנדשייק יוצג אך ורק אם קיימת רשת זמינה לשידור אקטיבי
                 if (_discoveredDevices.isNotEmpty) ...[
                   Expanded(
-                    child: ElevatedButton.icon(
+                    child: OutlinedButton.icon(
                       onPressed: _sendHandshake, 
                       icon: const Icon(Icons.handshake),
                       label: const Text("Handshake"),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade100),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.orange.shade700,
+                        side: BorderSide(color: Colors.orange.shade700, width: 2),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                 ],
                 
-                // כפתור האזנה תמיד מופיע, ומתרחב לכל רוחב הכרטיס אם אין מכשירים זמינים
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _toggleListening, 
-                    icon: Icon(isListening ? Icons.stop : Icons.mic),
-                    label: Text(isListening ? "Stop Listen" : "Start Listen"),
-                    style: ElevatedButton.styleFrom(backgroundColor: isListening ? Colors.red.shade100 : Colors.green.shade100),
+                    icon: Icon(isListening ? Icons.stop_circle : Icons.mic),
+                    label: Text(isListening ? "Stop Mic" : "Start Mic"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isListening ? Colors.red.shade500 : Colors.green.shade600,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
                   ),
                 ),
               ],

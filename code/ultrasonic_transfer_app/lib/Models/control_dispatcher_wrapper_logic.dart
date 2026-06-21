@@ -48,6 +48,12 @@ class ControlDispatcherWrapper {
   // getter for original dispacher
   bool get isDeviceTransmittingData => _originalDispatcher.isWorkerRunning; 
   ControlAction checkRawAudioWindow(List<double> window) {
+    if (_originalDispatcher.isWorkerRunning) {
+      return ControlAction.none;
+    }  
+    if (!_originalDispatcher.isStage1Allowed) {
+      return ControlAction.none; //ignore discovery freq after stage 1
+    }
     ControlAction action = _rxControlLogic.processAudioWindow(
       audioWindow: window,
       isDeviceTransmittingData: _originalDispatcher.isWorkerRunning,
@@ -348,6 +354,8 @@ void _proceedToNextStage({required bool asRoot}) async {
       _originalDispatcher.addDataPacketToQueue(data);
 
       void _log(String message) {
-    print("${DateTime.now().toIso8601String()} | $message");
+    
+    String timeOnly = DateTime.now().toIso8601String().substring(11, 23);
+    print("$timeOnly | $message");
   }
 }
