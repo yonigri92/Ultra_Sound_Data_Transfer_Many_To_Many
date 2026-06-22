@@ -6,6 +6,7 @@ import 'data_frame_builder_logic.dart';
 import 'packet_builder_logic.dart';
 import 'handshake_frame_builder_logic.dart';
 import 'device_id_create_logic.dart';
+import 'dart:async';
 enum TopologyEvent {
   discoveryStarted,  // "אל תעשה כלום, אנחנו בדיסקברי עכשיו"
   discoveryFinished, // "סיימנו, קח את נתוני המפה"
@@ -14,8 +15,10 @@ class Dispatcher{
   Function()? onDiscoveryFinished;
   Future<void> Function()? changeToNextStage;
   Future<void> Function()? csmaWait;
-
-
+  Future<void> Function()? csmaDataWait;
+  int? lockedPartnerId;
+  Completer<void>? _handshakeCompleter;
+  DateTime lastReceivedSymbolTime = DateTime.fromMillisecondsSinceEpoch(0);
   final List<int> _symbolBuffer = List.filled(24, 0, growable: true);
   final HandshakeDecoder _handshakeDecoder = HandshakeDecoder();
   final Map<int, DateTime> _recentReceivedPackets = {};//this is the saved data of all the recent recived messeges, 
@@ -23,6 +26,7 @@ class Dispatcher{
   final Map<int, Uint8List> _outgoingPackets = {}; // saves packets that we allready sent once so that we will be able to
                                                    // keep track on wheather we recived ack for them or if we need to send them again
   final Map<String, DateTime> _ignorePackets = {};                           
+  
   DataFrameBuilderLogic? _incomingMessage;
   final int _ackSeq = 255;
   DateTime _lastChildActivityTime = DateTime.now();
@@ -30,10 +34,13 @@ class Dispatcher{
   final List<Uint8List> _dataQueue = [];
   final List<Uint8List> _ackQueue = [];
   bool _hasJoinedStage2Chain = false;
+  bool _isSender = false;
+  Function()? onSessionReleased;
   final Map<int, int> _packetAttempts = {};// counter for each packet
   bool _isWorkerRunning = false;
   List<int> latestTopology = [];
   bool get isWorkerRunning => _isWorkerRunning;
+  
   Dispatcher(this._transmitter);
   bool isStage1Allowed = true;
   bool isStage2Allowed = false;
@@ -51,7 +58,7 @@ class Dispatcher{
   int _expectedPacketsCount = 0;
   Future<void> pushSymbol(int symbol, Function(String deviceId) onPacketDetected) async {
       if (symbol == -1) return;
-      
+      lastReceivedSymbolTime = DateTime.now();
       _symbolBuffer.removeAt(0);
       _symbolBuffer.add(symbol);
       
@@ -77,11 +84,19 @@ class Dispatcher{
         frame = alignedFrame;
        } 
       
-      else if ((frame[4] ) == 0x0B) {
+      // else if ((frame[4] ) == 0x0B) {//redundent for when ID wasnt short
+      //   preamble = 0x0B;
+      //   Uint8List alignedFrame = Uint8List(8);
+      //   for (int i = 0; i < 8; i++) {
+      //   alignedFrame[i] = (_symbolBuffer[8 + i * 2] << 4 | _symbolBuffer[8 + i * 2 + 1] & 0x0F);
+      // }
+      //   frame = alignedFrame; 
+      // }
+      else if ((frame[5] ) == 0x0B) {
         preamble = 0x0B;
-        Uint8List alignedFrame = Uint8List(8);
-        for (int i = 0; i < 8; i++) {
-        alignedFrame[i] = (_symbolBuffer[8 + i * 2] << 4 | _symbolBuffer[8 + i * 2 + 1] & 0x0F);
+        Uint8List alignedFrame = Uint8List(7);
+        for (int i = 0; i < 7; i++) {
+        alignedFrame[i] = (_symbolBuffer[10 + i * 2] << 4 | _symbolBuffer[10 + i * 2 + 1] & 0x0F);
       }
         frame = alignedFrame; 
       }
@@ -124,6 +139,7 @@ class Dispatcher{
           // handshake Packet
           _log("Routing to Handshake");
           String handshakeKey = frame.sublist(0, 7).join(',');
+          
           if (_ignorePackets.containsKey(handshakeKey)) {
             _log("Dispatcher: Listening to our own Handshake ignore.");
             _symbolBuffer.fillRange(0, 24, 0);
@@ -133,8 +149,16 @@ class Dispatcher{
             int dataPacket;
             DateTime now = DateTime.now();
             dataPacket = await _handshakeDecoder.decodeFrame(frame);
-            _symbolBuffer.fillRange(0, 24, 0);
             
+            if (lockedPartnerId != null && lockedPartnerId != dataPacket) {
+            _log("Dispatcher: Blocked Handshake attempt from 0x${dataPacket.toRadixString(16)}. Already locked on 0x${lockedPartnerId!.toRadixString(16)}");
+            _symbolBuffer.fillRange(0, 24, 0);
+            break;
+          }
+            
+            lockedPartnerId = dataPacket;
+            _log("Dispatcher: Session LOCKED with device: 0x${lockedPartnerId!.toRadixString(16).toUpperCase()}");
+            _symbolBuffer.fillRange(0, 24, 0);
             _recentReceivedPackets.removeWhere((id, time) => DateTime.now().difference(time).inSeconds > 8);//run over all messages and delete old ones
             if(_recentReceivedPackets.containsKey(dataPacket) == false ){
             _recentReceivedPackets[dataPacket] = now;
@@ -293,7 +317,7 @@ class Dispatcher{
             int receivedSeq = (highNibble << 4) | lowNibble;
 
 
-            if (!_outgoingPackets.containsKey(receivedSeq)) {
+            if (receivedSeq != 255 && !_outgoingPackets.containsKey(receivedSeq)) {
                 _log("Dispatcher: Acoustic echo or invalid ACK for Seq: $receivedSeq. Ignoring.");
                 _symbolBuffer.fillRange(0, 24, 0);
                 break; 
@@ -304,8 +328,11 @@ class Dispatcher{
             _outgoingPackets.remove(receivedSeq);
             _packetAttempts.remove(receivedSeq);
             
-          
-            
+            if (_handshakeCompleter != null && !_handshakeCompleter!.isCompleted) {
+                _handshakeCompleter!.complete(); 
+                _log("Dispatcher: Handshake ACK confirmed, Completer released.");
+            }
+                      
             
             _symbolBuffer.fillRange(0, 24, 0);
           }
@@ -316,6 +343,11 @@ class Dispatcher{
 
        case 0x0D:
           _log("Routing to Data");
+          if (lockedPartnerId == null) {
+            _log("Dispatcher: Overheard blind Data Packet but no active Handshake session is locked. Dropping.");
+            
+            break; 
+          }
           _log("RAW DATA FRAME FROM AIR: $frame");
           String dataKey = frame.join(',');
           if (_ignorePackets.containsKey(dataKey)) {
@@ -361,6 +393,16 @@ class Dispatcher{
                     _recentReceivedPackets[messageHash] = now;
                     _log("Dispatcher: Success! Delivering new message to UI.");
                     onPacketDetected(finalMessage);
+                    Future.delayed(const Duration(milliseconds: 1500), () {
+                      releaseSession(); 
+                    });
+                    Future.delayed(const Duration(seconds: 5), () {
+                      lockedPartnerId = null; 
+                      _log("Dispatcher: Session UNLOCKED and ready for new peers.");
+                    });
+
+
+                    
                   } else {
                     _log("Dispatcher: Duplicate whole message detected within 3 seconds. Dropping.");
                   }
@@ -405,6 +447,7 @@ class Dispatcher{
   }
 
   Future<void> addDataPacketToQueue(Uint8List data) async {
+    _isSender = true;
     DataFrameBuilderLogic packets  = DataFrameBuilderLogic.fromPacket(data);
     
     for(PacketBuilderLogic packet  in packets.messages.whereType<PacketBuilderLogic>()){
@@ -451,6 +494,11 @@ class Dispatcher{
     while (_ackQueue.isNotEmpty || _dataQueue.isNotEmpty) {
       if (_ackQueue.isNotEmpty) {
         Uint8List ackFrame = _ackQueue.removeAt(0);
+
+        if (csmaDataWait != null) {
+          await csmaDataWait!();
+        }
+
         await _transmitter.transmitFrame(ackFrame);
         await Future.delayed(const Duration(milliseconds: 650)); 
         continue; 
@@ -468,11 +516,16 @@ class Dispatcher{
         int attempts = (_packetAttempts[seq] ?? 0) + 1;// this must be wrote this way to either initiaise the map to 0 or add 1 if not 0
         _packetAttempts[seq] = attempts;
         _log("Worker: Transmitting Data packet (Seq: $seq), Attempt #$attempts");
+
+        if (csmaDataWait != null) {
+          await csmaDataWait!();
+        }
+        //await Future.delayed(const Duration(milliseconds: 100));
         await _transmitter.transmitFrame(dataFrame);
 
         if (attempts < 5) {
           _dataQueue.add(dataFrame);
-          await Future.delayed(const Duration(milliseconds: 950));
+          await Future.delayed(const Duration(milliseconds: 1500));
         } else {
            _log("Worker: Packet (Seq: $seq) failed after max retries. Dropping.");
           _outgoingPackets.remove(seq);
@@ -481,11 +534,16 @@ class Dispatcher{
         }
       }
     }
-
+    
     _isWorkerRunning = false; 
     _log("Worker: All queues empty. Going to sleep.");
+    if (_isSender && _dataQueue.isEmpty && _outgoingPackets.isEmpty) {
+      _isSender = false; 
+      releaseSession();
+    }
   }
   void resetTopology() {
+    lockedPartnerId = null;
     _recentReceivedPackets.clear();
     _myChildrenMap.clear(); // מומלץ לנקות גם את זה
     _expectedPacketsCount = 0; // מומלץ לנקות גם את זה
@@ -647,8 +705,8 @@ void _transmitChainWithRetries(Uint8List packet, int attempt) async {
       return;
     }
 
-    if (attempt > 8) {
-      _log("Dispatcher: No response after 8 attempts. Confirmed: I am a Leaf Node!"); 
+    if (attempt > 5) {
+      _log("Dispatcher: No response after 5 attempts. Confirmed: I am a Leaf Node!"); 
       _isLeafNode = true;
       _initiateStage3Return(packet); 
       return;
@@ -656,7 +714,7 @@ void _transmitChainWithRetries(Uint8List packet, int attempt) async {
     if (csmaWait != null) {
       await csmaWait!();
     }
-    _log("Dispatcher: Transmitting Chain Packet, Attempt #$attempt out of 8");
+    _log("Dispatcher: Transmitting Chain Packet, Attempt #$attempt out of 5");
     
     String outboundKey = packet.sublist(0, 7).join(',');
     _ignorePackets[outboundKey] = DateTime.now();
@@ -667,7 +725,7 @@ void _transmitChainWithRetries(Uint8List packet, int attempt) async {
 
     await _transmitter.transmitFrame(packet); 
 
-    Future.delayed(const Duration(milliseconds: 4000), () {
+    Future.delayed(const Duration(milliseconds: 3500), () {
       _transmitChainWithRetries(packet, attempt + 1); 
     });
   }
@@ -1095,6 +1153,23 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
   }
   void _log(String message) {
     print("${DateTime.now().toIso8601String()} | $message");
+  }
+  void releaseSession() {
+  lockedPartnerId = null;
+  _incomingMessage = null;
+  _log("Dispatcher: Session officially RELEASED.");
+  onSessionReleased?.call();
+}
+Future<void> waitForHandshakeACK() async {
+    _handshakeCompleter = Completer<void>();
+    try {
+      // מחכים 5 שניות, אם לא הגיע complete() זה יזרוק TimeoutException
+      await _handshakeCompleter!.future.timeout(const Duration(seconds: 5));
+    } catch (e) {
+      throw Exception("Handshake ACK timeout");
+    } finally {
+      _handshakeCompleter = null; // 🔥 מבטיח ניקוי הרמטי של האובייקט גם אם נזרקה שגיאה!
+    }
   }
 }
 

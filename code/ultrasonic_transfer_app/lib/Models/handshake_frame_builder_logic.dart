@@ -1,8 +1,11 @@
+//moveing to short ID created issues so we need to update the code, go back to commit MTM WORKS! if you ever want to return to long ID
 import 'dart:typed_data';
 import 'device_id_create_logic.dart';
 import 'packet_builder_logic.dart';
 class HandshakeFrameBuilderLogic {
-  static const int _frameStartingCharacter = 0x0B;
+  //static const int _frameStartingCharacter = 0x0B;
+  // שינוי ל-0x00 כדי שההזזה הראשונה תייצר 0x0B נקי ב-frame[0]
+  static const int _frameStartingCharacter = 0x00;
   static const int _frameSeparatingCharacter = 0x06;
 
 //   Future<Uint8List> buildHandshakeFrame() async {
@@ -37,8 +40,8 @@ Future<Uint8List> buildHandshakeFrame() async {
     int myShortIdByte = int.parse(shortIdStr, radix: 16);
     
     
-    List<int> userIdBytes = [0, 0, 0, 0, myShortIdByte];
-    
+    //List<int> userIdBytes = [0, 0, 0, 0, myShortIdByte];
+    List<int> userIdBytes = [0xB5, 0x55, 0x55, 0x55, myShortIdByte];
     
     Uint8List frame = Uint8List(7);
     frame[0] = (_frameStartingCharacter << 4) | (userIdBytes[0] >> 4);

@@ -10,8 +10,6 @@ import 'fsk_control_wrapper_logic.dart';
 import 'control_dispatcher_wrapper_logic.dart'; 
 import 'device_id_create_logic.dart';
 
-
-
 class UltraApiInterface extends StatefulWidget {
   const UltraApiInterface({super.key});
 
@@ -26,8 +24,8 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
 
   // === משתנים לניהול הטופולוגיה ===
   List<int> _discoveredDevices = []; 
-  int? _selectedTargetIndex; // משתמשים באינדקס כדי למנוע קריסת כפילויות של 0x00
-  int? _myShortIdByte; // שומרים את ה-ID שלנו כדי להציג "ME" ברשת
+  int? _selectedTargetIndex; 
+  int? _myShortIdByte; 
 
   final TextEditingController _textController = TextEditingController();
 
@@ -51,10 +49,15 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
 
     _dispatcher = Dispatcher(_transmitter);
     _wrapper = ControlDispatcherWrapper(_dispatcher, _txWrapper, _transmitter);
+    _dispatcher.onSessionReleased = () {
+      if (mounted) {
+        setState(() {
+          status = "Channel Idle. Session Unlocked.";
+        });
+      }
+    };
+    _loadMyId(); 
 
-    _loadMyId(); // טעינת המזהה שלנו מראש לטובת העיצוב הגרפי
-
-    // === האזנה לאירועי הרשת ועדכון UI גרפי ===
     _topologySubscription = _wrapper.topologyStream.listen((event) async { 
       if (event == TopologyEvent.discoveryStarted) {
         setState(() {
@@ -65,10 +68,8 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
       } else if (event == TopologyEvent.discoveryFinished) {
         setState(() {
           status = "Network Converged!";
-          // שומרים את כל המפה כולל האפסים כפי שביקשת
           _discoveredDevices = List.from(_dispatcher.latestTopology);
           
-          // בחירה אוטומטית של המכשיר האמיתי הראשון ב-Dropdown (לא אנחנו ולא אפס)
           if (_selectedTargetIndex == null) {
             var firstValid = _discoveredDevices.indexWhere((id) => id != 0x00 && id != _myShortIdByte);
             if (firstValid != -1) {
@@ -93,6 +94,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
               setState(() {
                 lastReceivedMessage = actualMessage;
                 status = "Incoming Message Received!";
+                
               });
             } else {
               print("API: Message dropped. Target: $targetHex, My ID: $myShortIdStr");
@@ -138,42 +140,59 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     }
   }
 
-  void _sendHandshake() async {
-    setState(() => status = "Transmitting Handshake...");
-    try {
-      await _dispatcher.addHandShakePacketToQueue();
-      setState(() => status = "Handshake enqueued");
-    } catch (e) {
-      setState(() => status = "Handshake Error: $e");
-    }
+  // 🔥 פונקציית העזר לשליחת הנדשייק כחלק מה-Pipeline האוטומטי
+  Future<void> _executeHandshakeWorkflow(int targetId) async {
+    _dispatcher.lockedPartnerId = targetId; 
+    _log("API: Auto-Locking session with 0x${targetId.toRadixString(16).toUpperCase()}");
+    
+    setState(() => status = "Auto Handshake initiated...");
+    await _dispatcher.addHandShakePacketToQueue();
+    await _dispatcher.waitForHandshakeACK();
+    // ⏳ מחכים 800 מילישניות שההנדשייק ייפלט לאוויר וייקלט בצד השני לפני שנציף את התור בדאטה
+    await Future.delayed(const Duration(milliseconds: 800));
   }
 
+  // 🔥 כפתור השידור המאוחד והחכם שלך!
   void _sendMessage() async {
     if (_textController.text.trim().isEmpty) return;
-    
-    String targetHex = "FF"; 
-    if (_discoveredDevices.isNotEmpty) {
-      if (_selectedTargetIndex == null) {
-        setState(() => status = "Please select a target device slot!");
-        return;
-      }
-      int targetId = _discoveredDevices[_selectedTargetIndex!];
-      targetHex = targetId.toRadixString(16).toUpperCase().padLeft(2, '0');
+    if (_selectedTargetIndex == null) {
+      setState(() => status = "Please select a target device!");
+      return;
     }
 
+    int targetId = _discoveredDevices[_selectedTargetIndex!];
+    String targetHex = targetId.toRadixString(16).toUpperCase().padLeft(2, '0');
     String textToSend = _textController.text;
-    setState(() => status = "Routing Message to 0x$targetHex...");
-    
+
     try {
+      // 🔒 שלב א': אם המערכת עדיין לא ביצעה הנדשייק רשמי, היא תעשה זאת כעת אוטומטית!
+      if (_dispatcher.lockedPartnerId == null) {
+        _log("API: No active lock found. Executing automatic Handshake pipeline.");
+        await _executeHandshakeWorkflow(targetId);
+      }
+
+      // שלב ב': שליחת הודעת הדאטה המנותבת לערוץ הנעול
+      setState(() => status = "Transmitting Payload to 0x$targetHex...");
       String routedMessage = "$targetHex:$textToSend";
       Uint8List dataBytes = Uint8List.fromList(routedMessage.codeUnits);
       
       await _wrapper.addDataPacketToQueue(dataBytes); 
       _textController.clear(); 
-      setState(() => status = "Message transmission sequence started.");
+      setState(() => status = "Data packet pushed to queue successfully.");
     } catch (e) {
-      setState(() => status = "Error routing message: $e");
+      setState(() => status = "Transmission Error: $e");
     }
+
+    // ❌ שים לב: מחקנו מפה את השורה ההרסנית: _dispatcher.lockedPartnerId = null;
+    // המנעול ישתחרר בצורה מאובטחת רק על ידי ה-Safety Cooldown טיימר שבנינו בדיספצ'ר!
+  }
+
+  // פונקציה אופציונלית לשחרור ידני של המנעול במידת הצורך
+  void _forceReleaseSession() {
+    setState(() {
+      _dispatcher.lockedPartnerId = null;
+      status = "Session lock forcefully released.";
+    });
   }
 
   void _toggleListening() async {
@@ -205,7 +224,6 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     }
   }
 
-  // ==== עיצוב גרפי לצומת בודד ברשת ====
   Widget _buildNetworkNode(int index, int id) {
     bool isEmpty = id == 0x00;
     bool isMe = id == _myShortIdByte;
@@ -238,6 +256,9 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
 
   @override
   Widget build(BuildContext context) {
+    // 🔒 בדיקה אם יש כרגע סשן נעול ומאושר בפרוטוקול
+    bool isSessionLocked = _dispatcher.lockedPartnerId != null;
+
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
       child: Padding(
@@ -245,7 +266,6 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Header
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -259,18 +279,12 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
               Center(
                 child: Text(
                   "MY DEVICE ID: 0x${_myShortIdByte!.toRadixString(16).toUpperCase().padLeft(2, '0')}",
-                  style: TextStyle(
-                    fontSize: 14, 
-                    fontWeight: FontWeight.w700, 
-                    color: Colors.deepPurple.shade700, 
-                    letterSpacing: 1.2
-                  ),
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.deepPurple.shade700, letterSpacing: 1.2),
                 ),
               ),
             ],
             const SizedBox(height: 15),
 
-            // Status Chip
             Center(
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -282,8 +296,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(isListening ? Icons.hearing : Icons.info_outline, 
-                        size: 16, color: isListening ? Colors.green.shade700 : Colors.blue.shade700),
+                    Icon(isListening ? Icons.hearing : Icons.info_outline, size: 16, color: isListening ? Colors.green.shade700 : Colors.blue.shade700),
                     const SizedBox(width: 8),
                     Text(status, style: TextStyle(color: isListening ? Colors.green.shade700 : Colors.blue.shade700, fontWeight: FontWeight.w700)),
                   ],
@@ -292,28 +305,25 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             ),
             const SizedBox(height: 25),
             TextButton.icon(
-              onPressed: () {
+              onPressed: isSessionLocked ? null : () {
                 setState(() {
                   status = "Network Converged! (SIMULATION)";
-                  // מזריקים מפה פיקטיבית: אנחנו (שולף אוטומטית), מכשיר שני (0xD7), ושני סלוטים ריקים
-                  _discoveredDevices = [_myShortIdByte ?? 0xAA, 0xDB, 0x19, 0x00,0x00];
-                  _selectedTargetIndex = 1; // בוחר אוטומטית במכשיר הפיקטיבי 0xD7
+                  _discoveredDevices = [_myShortIdByte ?? 0xAA, 0xDB, 0x19, 0x00, 0x00];
+                  _selectedTargetIndex = 1; 
                 });
               },
               icon: const Icon(Icons.bug_report, color: Colors.orange),
               label: const Text("Debug: Simulate Found Device", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
             ),
             const SizedBox(height: 15),
-            // Discovery Button (Main Call to Action)
             ElevatedButton(
-              onPressed: _startRoomDiscovery, 
+              onPressed: isSessionLocked ? null : _startRoomDiscovery, 
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 backgroundColor: Colors.deepPurple,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 elevation: 5,
-                shadowColor: Colors.deepPurple.withOpacity(0.5),
               ),
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -326,7 +336,6 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             ),
             const SizedBox(height: 25),
 
-            // === Live Network Map Visualization ===
             if (_discoveredDevices.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(16),
@@ -347,7 +356,6 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                     ),
                     const Divider(height: 20),
                     const SizedBox(height: 10),
-                    // ציור האובייקטים ברשת לפי הסדר שלהם במערך
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: List.generate(_discoveredDevices.length, (index) {
@@ -359,7 +367,6 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
               ),
               const SizedBox(height: 20),
 
-              // === Dropdown (מוגן מפני קריסות של 0x00) ===
               const Text("Target Configuration:", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)),
               const SizedBox(height: 8),
               Container(
@@ -375,26 +382,26 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                     icon: const Icon(Icons.arrow_drop_down, color: Colors.deepPurple),
                     value: _selectedTargetIndex, 
                     hint: const Text("Select Target Device"),
+                    // 🔥 נעילת ה-Dropdown: אם קיים מנעול סשן אקטיבי, onChanged מקבל null ומקפיא את הבחירה!
+                    onChanged: isSessionLocked ? null : (int? newIndex) => setState(() => _selectedTargetIndex = newIndex),
                     items: [
                       for (int index = 0; index < _discoveredDevices.length; index++) ...[
-                        if (_discoveredDevices[index] != _myShortIdByte) // 🔒 חוסם ומסנן את עצמי מהרשימה!
+                        if (_discoveredDevices[index] != _myShortIdByte) 
                           DropdownMenuItem<int>(
-                            value: index, // שומרים על האינדקס המקורי בשביל הראוטינג ב-addPacket
-                            enabled: _discoveredDevices[index] != 0x00, // אי אפשר לבחור מקום ריק
+                            value: index, 
+                            enabled: _discoveredDevices[index] != 0x00, 
                             child: Text(_discoveredDevices[index] == 0x00 
                                 ? "Slot $index: Empty" 
-                                : "Slot $index: Device 0x${_discoveredDevices[index].toRadixString(16).toUpperCase().padLeft(2, '0')}"),
+                                : "Slot $index: Device 0x${_discoveredDevices[index].toRadixString(16).toUpperCase().padLeft(2, '0')}${isSessionLocked && index == _selectedTargetIndex ? ' 🔒 (LOCKED)' : ''}"),
                           )
                       ]
                     ],
-                    onChanged: (int? newIndex) => setState(() => _selectedTargetIndex = newIndex),
                   ),
                 ),
               ),
               const SizedBox(height: 25),
             ],
 
-            // === Data Transfer Area ===
             if (_discoveredDevices.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(16),
@@ -445,17 +452,10 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
               const SizedBox(height: 25),
             ],
 
-            // === Received Message Display ===
-            // === Received Message Display ===
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.grey.shade800, Colors.black87],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                // שים לב: מחקנו מפה את ה-color כי הגרדיאנט מחליף אותו!
+                gradient: LinearGradient(colors: [Colors.grey.shade800, Colors.black87], begin: Alignment.topLeft, end: Alignment.bottomRight),
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10)],
               ),
@@ -473,18 +473,17 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
             ),
             const SizedBox(height: 25),
 
-            // === Bottom Controls ===
             Row(
               children: [
-                if (_discoveredDevices.isNotEmpty) ...[
+                if (isSessionLocked) ...[
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: _sendHandshake, 
-                      icon: const Icon(Icons.handshake),
-                      label: const Text("Handshake"),
+                      onPressed: _forceReleaseSession, 
+                      icon: const Icon(Icons.lock_open),
+                      label: const Text("Unlock"),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.orange.shade700,
-                        side: BorderSide(color: Colors.orange.shade700, width: 2),
+                        foregroundColor: Colors.red.shade700,
+                        side: BorderSide(color: Colors.red.shade700, width: 2),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
@@ -512,5 +511,9 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
         ),
       ),
     );
+  }
+
+  void _log(String message) {
+    print("${DateTime.now().toIso8601String().substring(11, 23)} | $message");
   }
 }

@@ -58,9 +58,9 @@ class FskControlWrapperLogic {
     
     double targetFreq = 0.0;
     if (_forcedToneIndex == 0) {
-      targetFreq = 20000.0; 
-    } else if (_forcedToneIndex == 1) {
       targetFreq = 20400.0; 
+    } else if (_forcedToneIndex == 1) {
+      targetFreq = 20800.0; 
     }
 
     

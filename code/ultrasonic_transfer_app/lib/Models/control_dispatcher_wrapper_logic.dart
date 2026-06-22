@@ -23,10 +23,17 @@ class ControlDispatcherWrapper {
   static const int _maxDiscoveryAttempts = 5;
   bool _isValidDiscoveryChain = false;
   Timer? _safetyTimeoutTimer;
+  DateTime? _lastBusyTxTime;
+  int _busySpamCount = 0;
+  int? _lastKnownLockedId;
+
+
+
   ControlDispatcherWrapper(this._originalDispatcher, this._txWrapper, this._transmitter) { 
     _rxControlLogic = FftControlWrapperLogic(FskFftDemodulator());
     _originalDispatcher.changeToNextStage = changeToNextStage;
     _originalDispatcher.csmaWait = csmaWait; 
+    _originalDispatcher.csmaDataWait = csmaDataWait;
     _originalDispatcher.onDiscoveryFinished = () async {
       if (!_isDiscoveryRunning) {
         _log("Wrapper: Discovery already finished for this cycle. Ignoring duplicate Stage 4 trigger.");
@@ -51,13 +58,27 @@ class ControlDispatcherWrapper {
     if (_originalDispatcher.isWorkerRunning) {
       return ControlAction.none;
     }  
-    if (!_originalDispatcher.isStage1Allowed) {
-      return ControlAction.none; //ignore discovery freq after stage 1
+    if (_originalDispatcher.lockedPartnerId != null) {
+      return ControlAction.none;
     }
+    int? currentLockedId = _originalDispatcher.lockedPartnerId;
+    if (currentLockedId != _lastKnownLockedId) {
+      _lastKnownLockedId = currentLockedId;
+      if (currentLockedId != null) {
+        _busySpamCount = 0; 
+        _log("Wrapper: New locked session detected with 0x${currentLockedId.toRadixString(16).toUpperCase()}. Resetting BUSY counter.");
+      }
+    }
+    bool isLocked = _originalDispatcher.lockedPartnerId != null;
+    if (!_originalDispatcher.isStage1Allowed && !isLocked) {
+      return ControlAction.none; // ignore discovery freq after stage 1 if not locked
+    }
+
     ControlAction action = _rxControlLogic.processAudioWindow(
       audioWindow: window,
       isDeviceTransmittingData: _originalDispatcher.isWorkerRunning,
       amITheDiscoveryInitiator: _amITheDiscoveryInitiator,
+      isSessionLocked: _originalDispatcher.lockedPartnerId != null,
     );
 
     // אם הרדאר תפס משהו - מפעילים מיד את הטיפול האסינכרוני
@@ -131,7 +152,10 @@ class ControlDispatcherWrapper {
   /// logic from input here
   
   Future<void> handleControlAction(ControlAction action) async {
-
+    if (_originalDispatcher.lockedPartnerId != null) {
+       _log("Wrapper: Session locked on 0x${_originalDispatcher.lockedPartnerId!.toRadixString(16)}. Muting Discovery/Busy logic.");
+       return;
+    }
     bool isPastStage1 = !_originalDispatcher.isStage1Allowed;
 
     if (_isDiscoveryActive && action == ControlAction.discoveryDetected) {
@@ -143,20 +167,27 @@ class ControlDispatcherWrapper {
     }
 
     switch (action) {
+      
       case ControlAction.swallowControlNoise:
         break;
       case ControlAction.respondWithBusy:
         if (isPastStage1) return;
         if (_isTransmittingBusy) return;
+        if (_lastBusyTxTime != null && DateTime.now().difference(_lastBusyTxTime!).inMilliseconds < 1500) {
+          return;
+        }
+        _lastBusyTxTime = DateTime.now();
         _isTransmittingBusy = true;
         _log("Wrapper: Heard Discovery while busy. Transmitting BUSY horn.");
         _txWrapper.startControlTone(1); // transmit busy
-        while (!_txWrapper.isFinished) {
-              await _transmitter.transmitControlTone();
-              await Future.delayed(const Duration(milliseconds: 40));
-    }
-        await Future.delayed(const Duration(milliseconds: 500));
+    //     while (!_txWrapper.isFinished) {
+    //           await _transmitter.transmitControlTone();
+    //           await Future.delayed(const Duration(milliseconds: 40));
+    // }
+        await _transmitter.transmitControlTone();
+        // await Future.delayed(const Duration(milliseconds: 500));
         _isTransmittingBusy = false;
+        _lastBusyTxTime = DateTime.now();
         break;
 
       case ControlAction.discoveryDetected:
@@ -218,6 +249,9 @@ class ControlDispatcherWrapper {
            break;
         }
         if (_isTransmittingBusy) return;
+        if (_lastBusyTxTime != null && DateTime.now().difference(_lastBusyTxTime!).inMilliseconds < 1500) {
+          return;
+        }
         _isTransmittingBusy = true;
         _log("Wrapper: Heard BUSY from peer. Propagating BUSY horn.");
         _txWrapper.startControlTone(1);
@@ -231,8 +265,29 @@ class ControlDispatcherWrapper {
         _isDiscoveryRunning = false;
         _resetAllDispatcherGates();
         break;
+      case ControlAction.externalDiscoveryOverheard:
+      if (isPastStage1) break;
+        if (_isTransmittingBusy) break;
+        if (_lastBusyTxTime != null && DateTime.now().difference(_lastBusyTxTime!).inMilliseconds < 1500) {
+          break;
+        }
+        
+        
+        if (_originalDispatcher.lockedPartnerId == null) {
+          _busySpamCount = 0;
+        }
 
-      case ControlAction.none:
+        
+        if (_busySpamCount >= 3) {
+          _log("Wrapper: Max BUSY threshold reached (3/3) for this lock instance. Suppressing horn to guard data stream.");
+          break;
+        }
+        
+        _busySpamCount++; 
+        _log("Wrapper: Device is in locked session. Overheard external Discovery, responding with BUSY to protect channel (Attempt $_busySpamCount/3).");
+        handleControlAction(ControlAction.respondWithBusy); 
+        break;
+        case ControlAction.none:
         break;
     }
 
@@ -259,6 +314,33 @@ class ControlDispatcherWrapper {
   
   _isCsmaActive = false;
 }
+  Future<void> csmaDataWait() async {
+    if (_isCsmaActive) return;
+    _isCsmaActive = true; 
+
+    bool isChannelBusy = true;
+    _log("Wrapper: CSMA DATA Carrier Sensing STARTED (Active Listen).");
+    
+    while (isChannelBusy) {
+      // ⏱️ חישוב: כמה מילישניות עברו מאז שהשותף השמיע קול באוויר?
+      final int msSinceLastSymbol = DateTime.now().difference(_originalDispatcher.lastReceivedSymbolTime).inMilliseconds;
+      
+      // אם עברו פחות מ-500ms, השותף עדיין באמצע לשדר את הפקטות שלו! הערוץ תפוס!
+      bool isOtherDeviceTransmitting = msSinceLastSymbol < 500; 
+      bool isBusyToneActive = _isTransmittingBusy;
+
+      if (isOtherDeviceTransmitting || isBusyToneActive) {
+        // הערוץ תפוס. חכה 40ms ותבדוק שוב בלולאה מבלי לשחרר שום פקטה
+        await Future.delayed(const Duration(milliseconds: 40));
+      } else {
+        // עבר חלון זמן קבוע של חצי שנייה של שקט מוחלט - האוויר פנוי, אפשר לשחרר שידור!
+        isChannelBusy = false;
+      }
+    }
+    
+    _log("Wrapper: CSMA DATA FINISHED. Air is clear, releasing frame safely.");
+    _isCsmaActive = false;
+  }
   Future<void> csmaWait() async {
     if (_isCsmaActive) {
       _log("${DateTime.now().toIso8601String()} | Wrapper: CSMA already active, blocking this request.");
