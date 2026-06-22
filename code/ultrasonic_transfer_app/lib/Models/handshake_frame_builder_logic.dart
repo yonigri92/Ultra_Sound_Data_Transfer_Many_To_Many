@@ -4,7 +4,7 @@ import 'device_id_create_logic.dart';
 import 'packet_builder_logic.dart';
 class HandshakeFrameBuilderLogic {
   //static const int _frameStartingCharacter = 0x0B;
-  // שינוי ל-0x00 כדי שההזזה הראשונה תייצר 0x0B נקי ב-frame[0]
+ 
   static const int _frameStartingCharacter = 0x00;
   static const int _frameSeparatingCharacter = 0x06;
 

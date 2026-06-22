@@ -8,8 +8,8 @@ import 'handshake_frame_builder_logic.dart';
 import 'device_id_create_logic.dart';
 import 'dart:async';
 enum TopologyEvent {
-  discoveryStarted,  // "אל תעשה כלום, אנחנו בדיסקברי עכשיו"
-  discoveryFinished, // "סיימנו, קח את נתוני המפה"
+  discoveryStarted,  
+  discoveryFinished, 
 }
 class Dispatcher{
   Function()? onDiscoveryFinished;
@@ -181,7 +181,7 @@ class Dispatcher{
             }
             _lastChildActivityTime = DateTime.now();
             if (_isWatchdogRunning) {
-              _watchdogCountdown = 12; // מאפסים חזרה ל-12 שניות כי הילד עדיין תקוע בשלב 2
+              _watchdogCountdown = 12; 
               _log("Dispatcher: Overheard valid Stage 2 frame. Child is still actively trying to join, extending Watchdog.");
             }
           if (isStage3Allowed || isStage4Allowed) {
@@ -201,10 +201,10 @@ class Dispatcher{
 
 
         case 0x0F:
-          // 1. הגנת ה-CRC של יוני: אם שמענו שלב 3 וה-CRC נכשל, הבן מנסה לדבר!
+          
           if (PacketBuilderLogic.crcCheckSum(frame) != 0) {
             if (_isWatchdogRunning) {
-              _watchdogCountdown = 10; // מאפסים את השעון חזרה ל-10 שניות מהרגע הזה!
+              _watchdogCountdown = 10; 
               _log("Dispatcher: Overheard Stage 3 Preamble but CRC8 Failed. Child is struggling to connect, extending Watchdog window to 10s.");
             }
             _symbolBuffer.fillRange(0, 24, 0);
@@ -217,7 +217,7 @@ class Dispatcher{
             break;
           }
 
-          // אם ה-CRC תקין, נעדכן את השעון ליתר ביטחון ונריץ את המיזוג
+          
           _watchdogCountdown = 10;
           _symbolBuffer.fillRange(0, 24, 0);
           _log("Routing to Stage 3: Return Mechanism");
@@ -229,21 +229,21 @@ class Dispatcher{
 
         case 0x0A:
           
-          // 1. בדיקת שערים בסיסית - האם בכלל מותר לנו להקשיב לשלב 4
+          
           if (!isStage4Allowed && !isStage3Allowed) {
             _log("Dispatcher: Overheard Stage 4 Frame but Gate 4 is LOCKED. Dropping.");
             _symbolBuffer.fillRange(0, 24, 0);
             break;
           }
           
-          // 2. בדיקת תקינות ה-CRC8 של הפריים
+          
           if (PacketBuilderLogic.crcCheckSum(frame) != 0) {
             _log("Dispatcher: Overheard Stage 4 Preamble but CRC8 Verification Failed. Dropping.");
             _symbolBuffer.fillRange(0, 24, 0);
             break;
           }
           _symbolBuffer.fillRange(0, 24, 0);
-          // 🔥 פיתוח מנגנון המען של יוני: חילוץ המיקום וה-Mask כדי לוודא שזה מיועד אלינו מההורה
+         
           List<int> idSlots = frame.sublist(1, 6);
           String myShortIdStr = await DeviceIdCreateLogic().getShortId();
           int myShortIdByte = int.parse(myShortIdStr, radix: 16);
@@ -251,7 +251,7 @@ class Dispatcher{
           bool myIdFound = idSlots.contains(myShortIdByte);
           int myIndex = idSlots.indexOf(myShortIdByte);
           
-          // חישוב המען האקטיבי מתוך ה-Consumption Mask
+          
           int consumptionMask = frame[6];
           int myBitPosition = 6 - myIndex;
           int leftmostActiveSlot = -1;
@@ -263,29 +263,28 @@ class Dispatcher{
             }
           }
           
-          // תנאי המען הרשמי: המזהה שלי קיים, וזה בדיוק התור שלי בשרשרת (הביט השמאלי הפעיל ביותר)
+          
           bool isPacketDirectlyForMe = myIdFound && (leftmostActiveSlot == myBitPosition);
           
-          // 3. אם אנחנו בשלב 3, נתייחס לזה כ-Implicit ACK אך ורק אם הפאקט מיועד אלינו ישירות!
+          
           if (isStage3Allowed && !isStage4Allowed) {
             if (isPacketDirectlyForMe) {
               _log("Dispatcher: Overheard VALID Stage 4 from parent directed to ME! Treating as Stage 3 Implicit ACK.");
               
-              _receivedImplicitAckStage3 = true; // עצירת לולאת הרטרייז של שלב 3
-              
+              _receivedImplicitAckStage3 = true; 
               if (changeToNextStage != null) {
-                await changeToNextStage!(); // מעבר לוגי מיידי לשלב 4 (פתיחת שער 4)
+                await changeToNextStage!(); 
               }
             } else {
-              // הפאקט תקין מבחינת CRC, אבל הוא מיועד למכשיר אחר כרגע. 
-              // אנחנו מתעלמים וממשיכים להמתין בשלב 3 לפאקט שלנו.
+              
+            
               _log("Dispatcher: Overheard Stage 4 but it's NOT my turn yet. Continuing Stage 3 retries.");
               
               break;
             }
           }
           
-          // 4. ניתוח הפאקט ועיבוד ה-Consumption Mask בשלב 4 (ירוץ רק אם אנחנו בשלב 4 או שזה עתה עברנו אליו)
+          
           _log("Routing to Stage 4: Final Distribution & Consumption Mask");
           await _handleStage4Distribution(frame);
           
@@ -545,9 +544,9 @@ class Dispatcher{
   void resetTopology() {
     lockedPartnerId = null;
     _recentReceivedPackets.clear();
-    _myChildrenMap.clear(); // מומלץ לנקות גם את זה
-    _expectedPacketsCount = 0; // מומלץ לנקות גם את זה
-    _hasJoinedStage2Chain = false; // 🔥 מאפסים את חסם השרשרת
+    _myChildrenMap.clear(); 
+    _expectedPacketsCount = 0; 
+    _hasJoinedStage2Chain = false; 
     _stage4TurnExecuted = false;
     _watchdogExtensions = 0;
     _dataQueue.clear();
@@ -565,7 +564,7 @@ class Dispatcher{
     rootFrame[1] = myShortIdByte;
     
     rootFrame[6] = 0x00; 
-    rootFrame[7] = PacketBuilderLogic.crcCheckSum(rootFrame.sublist(0, 7)); // ה-CRC8 הטאבולרי שלך
+    rootFrame[7] = PacketBuilderLogic.crcCheckSum(rootFrame.sublist(0, 7)); 
 
     _log("Dispatcher: Root initiating Stage 2 Discovery Chain: $rootFrame");
     _receivedImplicitAckStage2 = false;
@@ -612,16 +611,16 @@ class Dispatcher{
       bool myIdFound = myIndexInSlots != -1;
       if (myIdFound) {  
         bool isImplicitAckValid = false;
-        // 🔥 הגנה: רק אם זו הפעם הראשונה שאנחנו מקבלים את האישור, מקדמים את השלב הלוגי
+        
         if (myIndexInSlots == 0) {
-          // אם אני השורש (אינדקס 0), פאקט נחשב כאישור אך ורק אם המקום הבא אחריו אינו ריק!
+          
           if (idSlots[1] != 0x00) {
             isImplicitAckValid = true;
           } else {
             _log("Dispatcher: Overheard my own Root frame echo, but no children joined yet. Continuing Stage 2 discovery.");
           }
         } else {
-          // אם אני Follower, עצם קיום ה-ID שלי אומר שהתקבלתי לשרשרת
+          
           isImplicitAckValid = true;
         }
         
@@ -638,7 +637,7 @@ class Dispatcher{
           }
           _log("Dispatcher: Gate 3 is now OPEN.");
           
-          // 🔥 אם אני השורש (אינדקס 0), זה הזמן להפעיל את הווטשדוג של שלב 3!
+          
           if (myIndexInSlots == 0) {
             _startStage3Watchdog(frame);
           }
@@ -656,7 +655,7 @@ class Dispatcher{
             }
           }
         } else {
-          // חבילה כפולה באוויר - מתעלמים ולא מקדמים שלב פעם שנייה בטעות
+          
           _log("Dispatcher: Duplicate implicit ACK overheard. Already in Stage 3. Ignoring.");
         }
 
@@ -775,14 +774,14 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
       int parentId = idSlots[myIndex - 1];  
       
       Uint8List stage3Frame = Uint8List.fromList(stage2Packet);
-      stage3Frame[0] = 0x0F;        // שינוי פריאמבל לשלב 3 רשמי
-      stage3Frame[6] = parentId;    // השתלת ה-Target ID בבייט 6
-      stage3Frame[7] = PacketBuilderLogic.crcCheckSum(stage3Frame.sublist(0, 7)); // חישוב CRC טאבולרי מעודכן
+      stage3Frame[0] = 0x0F;        
+      stage3Frame[6] = parentId;    
+      stage3Frame[7] = PacketBuilderLogic.crcCheckSum(stage3Frame.sublist(0, 7)); 
       
       _receivedImplicitAckStage3 = false;
       _transmitStage3WithRetries(stage3Frame, 1);
     } else if (myIndex == 0) {
-      // 🔥 תיקון יציאת שלב 3 של יוני: פותחים את שער 3 ומאזינים לבנים איטיים
+     
       _log("Dispatcher: Root node finished Stage 2 attempts. Opening Gate 3 and starting Watchdog to listen for late children.");
       if (changeToNextStage != null) {
         await changeToNextStage!(); 
@@ -850,7 +849,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
           if (idSlots[i] != 0x00 && frame[6] == idSlots[i]) {
              _log("Dispatcher: Overheard active ancestor upstream transmission. Stopping our Stage 3 retries.");
              
-             // 🔥 הגנה: עוברים לשלב 4 רק אם עוד לא עברנו אליו קודם
+             
              if (!isStage4Allowed) {
                _receivedImplicitAckStage3 = true;
                if (changeToNextStage != null) {
@@ -882,7 +881,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
               
               if (myIndex == 0) {
                 _log("Dispatcher: Root Node received all branches! Stopping Watchdog and transitioning to Stage 4.");
-                _isWatchdogRunning = false; // 🔥 עצירה מיידית של הלולאה, קיבלנו פקטה תקינה ואין מה לחכות יותר
+                _isWatchdogRunning = false; 
                 _initiateStage4Distribution(frame);
               } else {
                //combine brothers
@@ -1031,7 +1030,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
         Uint8List nextFrame = Uint8List.fromList(frame);
         nextFrame[6] = consumptionMask & ~(1 << myBitPosition); //turn off personal bit
         nextFrame[7] = PacketBuilderLogic.crcCheckSum(nextFrame.sublist(0, 7)); 
-        ////////////// תריך להוסיף פה הוספת הפקטא למאגר הנתונים שלנו סוג של RETURN לAPI ובוא רשימת המכשירים הקיימים ברשת
+        
         latestTopology = List.from(idSlots);
         
         _log("Dispatcher: Propagating updated Stage 4 frame down the chain: $nextFrame");
@@ -1049,9 +1048,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
             latestTopology = List.from(idSlots);
             _log("Dispatcher: Root overheard convergence frame. Process successfully finished! Final topology: $latestTopology");
             onDiscoveryFinished?.call();
-            // if (changeToNextStage != null) {
-            //   await changeToNextStage!();
-            // }
+            
           }
         
         _symbolBuffer.fillRange(0, 24, 0);
@@ -1063,7 +1060,7 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
       _log("DEBUG: Stage 4 handling failed: $e");
     }
   }
-  //init stage 4 root
+  
   void _initiateStage4Distribution(Uint8List stage3Packet) async {
     _log("Dispatcher: Root Node initiating Stage 4 Final Distribution.");
     if (changeToNextStage != null) {
@@ -1112,8 +1109,6 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
       int myShortIdByte = int.parse(myShortIdStr, radix: 16);
       int myIndex = idSlots.indexOf(myShortIdByte);
 
-      // 2. תנאי ההתכנסות המאוחד של יוני:
-      // אני עלה שהצליח אם: המאסק ריק (0), או שאני האינדקס האחרון (4), או שהמקום הבא אחרי בטבלה ריק (0)
       bool isLeafTermination = (packet[6] == 0) || 
                                (myIndex == 4) || 
                                (myIndex != -1 && idSlots[myIndex + 1] == 0x00);
@@ -1121,18 +1116,15 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
       if (isLeafTermination) {
         _log("Dispatcher: I am structurally a Leaf Node or network converged. Completed 5 redundant attempts for parent safety. Finishing process with success!");
         
-        // עדכון ה-UI ומעבר השלב המבוקר קורים רק עכשיו, בסוף פעימות היתירות
         onDiscoveryFinished?.call();
-        // if (changeToNextStage != null) {
-        //   await changeToNextStage!();
-        // }
+        
       } else {
-        // אם הגענו לניסיון 6 ואני לא עלה, סימן שלא קיבלתי Implicit ACK מהילד שלי והנתיב נשבר
+       
         _log("Dispatcher: Stage 4 Distribution failed to reach child after 5 attempts. Path broken.");
         onDiscoveryFinished?.call();
       }
       
-      return; // 🔒 ה-return המאובטח ברמת הבלוק הראשי! חוסם ומסיים את הפונקציה הרמטית בכל מצב.
+      return; 
     }
     if (csmaWait != null) {
       await csmaWait!();
@@ -1163,12 +1155,12 @@ void _initiateStage3Return(Uint8List stage2Packet) async {
 Future<void> waitForHandshakeACK() async {
     _handshakeCompleter = Completer<void>();
     try {
-      // מחכים 5 שניות, אם לא הגיע complete() זה יזרוק TimeoutException
+      
       await _handshakeCompleter!.future.timeout(const Duration(seconds: 5));
     } catch (e) {
       throw Exception("Handshake ACK timeout");
     } finally {
-      _handshakeCompleter = null; // 🔥 מבטיח ניקוי הרמטי של האובייקט גם אם נזרקה שגיאה!
+      _handshakeCompleter = null; 
     }
   }
 }

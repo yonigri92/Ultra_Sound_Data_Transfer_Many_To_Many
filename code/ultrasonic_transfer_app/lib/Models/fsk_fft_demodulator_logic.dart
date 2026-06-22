@@ -15,8 +15,8 @@ class FskFftDemodulator {
       17054.3,17226.6,17399.8,17571.1,17743.4,17915.6,18087.9,18260.2,
       18432.4,18604.7,18777.0,18949.2,19121.5,19293.8,19466.0,19638.3],
     
-    this.windowSize = 512, // הגדלנו כדי לקבל דיוק בתדרים
-    this.baudRate = 10,    // הורדנו דרסטית ל-20 ביטים בשנייה
+    this.windowSize = 512,
+    this.baudRate = 10,   
   // FskFftDemodulator({
   //   this.sampleRate = 44100,
   //   this.freq0 = 18000.0,
@@ -40,13 +40,10 @@ int detectBit(List<double> audioWindow) {
     energy[i] = magnitudes[_bin[i]]; 
    }
  
-  // 1. סף רעש מינימלי (Absolute Floor)
-  // נוריד אותו ל-0.2 כדי שיוכל לקלוט גם בווליום נמוך
+ 
   const double minPower = 0.2; 
 
-  // 2. סף יחס (The Gap)
-  // תדר אחד חייב להיות חזק פי 1.5 מהשני כדי שנאמין לו.
-  // זה ימנע את ה-"קיר של 1" בווליום גבוה.
+  
   const double ratio = 1.5;
   double energyAvg = 0;
    for(int i = 0; i < 16; i++){
@@ -62,7 +59,7 @@ int detectBit(List<double> audioWindow) {
    if(maxEnergy > minPower && maxEnergy > energyAvg * ratio)
       {return maxEnergyindex;}
 
-  // אם שניהם חלשים מדי או דומים מדי בעוצמה - אל תחליט (נחזיר -1)
+  
   return -1;
 }
 }

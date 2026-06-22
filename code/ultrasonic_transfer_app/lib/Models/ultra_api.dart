@@ -22,7 +22,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
   String lastReceivedMessage = "Waiting for data...";
   bool isListening = false;
 
-  // === משתנים לניהול הטופולוגיה ===
+  
   List<int> _discoveredDevices = []; 
   int? _selectedTargetIndex; 
   int? _myShortIdByte; 
@@ -140,7 +140,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     }
   }
 
-  // 🔥 פונקציית העזר לשליחת הנדשייק כחלק מה-Pipeline האוטומטי
+  
   Future<void> _executeHandshakeWorkflow(int targetId) async {
     _dispatcher.lockedPartnerId = targetId; 
     _log("API: Auto-Locking session with 0x${targetId.toRadixString(16).toUpperCase()}");
@@ -148,11 +148,11 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     setState(() => status = "Auto Handshake initiated...");
     await _dispatcher.addHandShakePacketToQueue();
     await _dispatcher.waitForHandshakeACK();
-    // ⏳ מחכים 800 מילישניות שההנדשייק ייפלט לאוויר וייקלט בצד השני לפני שנציף את התור בדאטה
+    
     await Future.delayed(const Duration(milliseconds: 800));
   }
 
-  // 🔥 כפתור השידור המאוחד והחכם שלך!
+  
   void _sendMessage() async {
     if (_textController.text.trim().isEmpty) return;
     if (_selectedTargetIndex == null) {
@@ -165,13 +165,13 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
     String textToSend = _textController.text;
 
     try {
-      // 🔒 שלב א': אם המערכת עדיין לא ביצעה הנדשייק רשמי, היא תעשה זאת כעת אוטומטית!
+     
       if (_dispatcher.lockedPartnerId == null) {
         _log("API: No active lock found. Executing automatic Handshake pipeline.");
         await _executeHandshakeWorkflow(targetId);
       }
 
-      // שלב ב': שליחת הודעת הדאטה המנותבת לערוץ הנעול
+      
       setState(() => status = "Transmitting Payload to 0x$targetHex...");
       String routedMessage = "$targetHex:$textToSend";
       Uint8List dataBytes = Uint8List.fromList(routedMessage.codeUnits);
@@ -183,11 +183,10 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
       setState(() => status = "Transmission Error: $e");
     }
 
-    // ❌ שים לב: מחקנו מפה את השורה ההרסנית: _dispatcher.lockedPartnerId = null;
-    // המנעול ישתחרר בצורה מאובטחת רק על ידי ה-Safety Cooldown טיימר שבנינו בדיספצ'ר!
+    
   }
 
-  // פונקציה אופציונלית לשחרור ידני של המנעול במידת הצורך
+
   void _forceReleaseSession() {
     setState(() {
       _dispatcher.lockedPartnerId = null;
@@ -382,7 +381,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                     icon: const Icon(Icons.arrow_drop_down, color: Colors.deepPurple),
                     value: _selectedTargetIndex, 
                     hint: const Text("Select Target Device"),
-                    // 🔥 נעילת ה-Dropdown: אם קיים מנעול סשן אקטיבי, onChanged מקבל null ומקפיא את הבחירה!
+                    
                     onChanged: isSessionLocked ? null : (int? newIndex) => setState(() => _selectedTargetIndex = newIndex),
                     items: [
                       for (int index = 0; index < _discoveredDevices.length; index++) ...[

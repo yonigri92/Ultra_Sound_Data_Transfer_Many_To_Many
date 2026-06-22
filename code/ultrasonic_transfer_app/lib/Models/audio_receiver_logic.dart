@@ -62,9 +62,9 @@ class AudioReceiver {
       if (onWindowAvailable != null) {
         ControlAction action = onWindowAvailable!(window);
         
-        // אם הראפר זיהה פקודת שליטה (Discovery או BUSY)
+       
         if (action != ControlAction.none) {
-          // מנקים את החלון מהבאפר ועוברים לחלון הבא - לא מפענחים אותו כסימבול דאטה!
+          
           _sampleBuffer.removeRange(0, _demodulator.windowSize ~/ 2);
           continue; 
         }

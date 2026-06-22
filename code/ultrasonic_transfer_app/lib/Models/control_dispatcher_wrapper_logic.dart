@@ -81,7 +81,7 @@ class ControlDispatcherWrapper {
       isSessionLocked: _originalDispatcher.lockedPartnerId != null,
     );
 
-    // אם הרדאר תפס משהו - מפעילים מיד את הטיפול האסינכרוני
+    
     if (action != ControlAction.none) {
       handleControlAction(action);
     }
@@ -111,7 +111,7 @@ class ControlDispatcherWrapper {
 
   while (!_txWrapper.isFinished) {
       await _transmitter.transmitControlTone();
-      // השהייה קטנה התואמת לאורך הבאפר (כ-40 מילישניות) כדי לא להציף את כרטיס הקול
+      
       await Future.delayed(const Duration(milliseconds: 40));
     }
 
@@ -218,7 +218,7 @@ class ControlDispatcherWrapper {
             
           }else {
           _log("Wrapper: Discovery chain became invalid (BUSY signal detected). Resetting lock.");
-          _isDiscoveryRunning = false; // כישלון מוחלט - משחררים את הנעילה
+          _isDiscoveryRunning = false;
           _isDiscoveryActive = false;
           _resetAllDispatcherGates();
         }
@@ -230,7 +230,7 @@ class ControlDispatcherWrapper {
         _amITheDiscoveryInitiator = false;
         _backoffUntil = DateTime.now().add(const Duration(seconds: 5));
         
-        // חכה 5 שניות לפני שמנסים שוב ותעלה COUNTER (ה-counter כבר עלה ב-execute הקודם)
+       
         if (_discoveryAttempts < _maxDiscoveryAttempts) {
           Future.delayed(const Duration(seconds: 5), () {
             _executeDiscoveryAttempt();
@@ -322,18 +322,18 @@ class ControlDispatcherWrapper {
     _log("Wrapper: CSMA DATA Carrier Sensing STARTED (Active Listen).");
     
     while (isChannelBusy) {
-      // ⏱️ חישוב: כמה מילישניות עברו מאז שהשותף השמיע קול באוויר?
+      
       final int msSinceLastSymbol = DateTime.now().difference(_originalDispatcher.lastReceivedSymbolTime).inMilliseconds;
       
-      // אם עברו פחות מ-500ms, השותף עדיין באמצע לשדר את הפקטות שלו! הערוץ תפוס!
+      
       bool isOtherDeviceTransmitting = msSinceLastSymbol < 500; 
       bool isBusyToneActive = _isTransmittingBusy;
 
       if (isOtherDeviceTransmitting || isBusyToneActive) {
-        // הערוץ תפוס. חכה 40ms ותבדוק שוב בלולאה מבלי לשחרר שום פקטה
+       
         await Future.delayed(const Duration(milliseconds: 40));
       } else {
-        // עבר חלון זמן קבוע של חצי שנייה של שקט מוחלט - האוויר פנוי, אפשר לשחרר שידור!
+       
         isChannelBusy = false;
       }
     }
@@ -373,7 +373,7 @@ class ControlDispatcherWrapper {
       }
     }
     
-    // 🔥 כאן קורה הרגע המעניין: סיום הבדיקה
+    
     _log("${DateTime.now().toIso8601String()} | Wrapper: CSMA FINISHED. Air is clear.");
     _isCsmaActive = false;
   }
@@ -396,10 +396,10 @@ void _proceedToNextStage({required bool asRoot}) async {
         _amITheDiscoveryInitiator = false;
         _isValidDiscoveryChain = false;
         
-        _resetAllDispatcherGates(); // נועל את שערים 2, 3, 4
-        _originalDispatcher.isStage1Allowed = true; // 🔓 פותח מחדש את שער 1 להאזנה נקייה!
+        _resetAllDispatcherGates(); 
+        _originalDispatcher.isStage1Allowed = true; 
         _originalDispatcher.resetTopology();
-        _eventController.add(TopologyEvent.discoveryFinished); // משחרר את ה-UI
+        _eventController.add(TopologyEvent.discoveryFinished);
       }
     });
     if (asRoot) {
