@@ -302,19 +302,7 @@ class _UltraApiInterfaceState extends State<UltraApiInterface> {
                 ),
               ),
             ),
-            const SizedBox(height: 25),
-            TextButton.icon(
-              onPressed: isSessionLocked ? null : () {
-                setState(() {
-                  status = "Network Converged! (SIMULATION)";
-                  _discoveredDevices = [_myShortIdByte ?? 0xAA, 0xDB, 0x19, 0x00, 0x00];
-                  _selectedTargetIndex = 1; 
-                });
-              },
-              icon: const Icon(Icons.bug_report, color: Colors.orange),
-              label: const Text("Debug: Simulate Found Device", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
-            ),
-            const SizedBox(height: 15),
+            
             ElevatedButton(
               onPressed: isSessionLocked ? null : _startRoomDiscovery, 
               style: ElevatedButton.styleFrom(
